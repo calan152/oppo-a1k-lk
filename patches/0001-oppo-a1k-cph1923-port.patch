@@ -1,5 +1,5 @@
 diff --git a/app/mt_boot/aee/KEDump.c b/app/mt_boot/aee/KEDump.c
-index 4376403d3a9995dd72002227e4511a2f16037c6c..10e570bb6ad2f6d47d87ed263d72f6327a24a887 100644
+index 4376403..10e570b 100644
 --- a/app/mt_boot/aee/KEDump.c
 +++ b/app/mt_boot/aee/KEDump.c
 @@ -994,6 +994,59 @@ static int kedump_to_expdb(void)
@@ -81,7 +81,7 @@ index 4376403d3a9995dd72002227e4511a2f16037c6c..10e570bb6ad2f6d47d87ed263d72f632
  		return 0;
  
 diff --git a/app/mt_boot/aee/ram_console.c b/app/mt_boot/aee/ram_console.c
-index ca0d15a47a434b9258b5429b8bd486f672d6c59d..5c5ccb1d1cbac4fcbd84df81fdd1cd38f509edeb 100644
+index ca0d15a..5c5ccb1 100644
 --- a/app/mt_boot/aee/ram_console.c
 +++ b/app/mt_boot/aee/ram_console.c
 @@ -494,8 +494,8 @@ void ram_console_dts_written(void *fdt)
@@ -141,7 +141,7 @@ index ca0d15a47a434b9258b5429b8bd486f672d6c59d..5c5ccb1d1cbac4fcbd84df81fdd1cd38
  }
 -
 diff --git a/app/mt_boot/bootargs.c b/app/mt_boot/bootargs.c
-index 34e235dab3814908dd4d5af58a2f64f0ece36a5b..8f7ec21d4cd90f7c0149bb5866119ed9a4161cdf 100644
+index 34e235d..8f7ec21 100644
 --- a/app/mt_boot/bootargs.c
 +++ b/app/mt_boot/bootargs.c
 @@ -43,6 +43,7 @@
@@ -457,7 +457,7 @@ index 34e235dab3814908dd4d5af58a2f64f0ece36a5b..8f7ec21d4cd90f7c0149bb5866119ed9
  	return true;
  }
 diff --git a/app/mt_boot/bootargs.h b/app/mt_boot/bootargs.h
-index af247dc342d1d2eb4c6e8f825fb8503bf98d2b2f..aded3c37fd225f3491ad73bc9f9fa6d56b1e4bdf 100644
+index af247dc..aded3c3 100644
 --- a/app/mt_boot/bootargs.h
 +++ b/app/mt_boot/bootargs.h
 @@ -34,9 +34,11 @@
@@ -474,18 +474,20 @@ index af247dc342d1d2eb4c6e8f825fb8503bf98d2b2f..aded3c37fd225f3491ad73bc9f9fa6d5
  #endif /* __BOOTARGS_H */
 -
 diff --git a/app/mt_boot/fastboot.c b/app/mt_boot/fastboot.c
-index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58cfcb4b85 100644
+index 495b7b8..1c2e5f2 100644
 --- a/app/mt_boot/fastboot.c
 +++ b/app/mt_boot/fastboot.c
-@@ -69,6 +69,7 @@ extern int get_off_mode_charge_status(void);  // FIXME!!! #include <xxx.h>
+@@ -69,6 +69,9 @@ extern int get_off_mode_charge_status(void);  // FIXME!!! #include <xxx.h>
  #define MAX_RSP_SIZE 64
  /* MAX_USBFS_BULK_SIZE: if use USB3 QMU GPD mode: cannot exceed 63 * 1024 */
  #define MAX_USBFS_BULK_SIZE (16 * 1024)
-+#define FASTBOOT_FETCH_MAX_SIZE (MAX_USBFS_BULK_SIZE - 1)
++/* Keep fetch DATA transfers and the known partition tails off the MTK
++ * UDC's 512-byte packet boundary. */
++#define FASTBOOT_FETCH_MAX_SIZE 0x3C80U
  
  #define EXPAND(NAME) #NAME
  #define TARGET(NAME) EXPAND(NAME)
-@@ -390,6 +391,202 @@ void fastboot_okay(const char *info)
+@@ -390,10 +393,277 @@ void fastboot_okay(const char *info)
  	fastboot_ack("OKAY", info);
  }
  
@@ -602,14 +604,74 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +	fastboot_okay("");
 +}
 +
++static bool fastboot_fetch_partition_allowed(const char *part_name)
++{
++	static const char * const allowed[] = {
++		"expdb",
++		"boot",
++		"recovery",
++		"dtbo",
++		"system",
++		"vendor",
++	};
++	unsigned i;
++
++	for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
++		if (!strcmp(part_name, allowed[i]))
++			return true;
++	}
++
++	return false;
++}
++
++static int fastboot_parse_u64(const char *arg, u64 *value)
++{
++	u64 result = 0;
++	unsigned base = 10;
++	unsigned digit;
++	bool have_digit = false;
++
++	if (arg == NULL || value == NULL || arg[0] == '\0')
++		return -1;
++
++	if (arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) {
++		base = 16;
++		arg += 2;
++	}
++
++	while (*arg != '\0') {
++		if (*arg >= '0' && *arg <= '9')
++			digit = (unsigned)(*arg - '0');
++		else if (*arg >= 'a' && *arg <= 'f')
++			digit = (unsigned)(*arg - 'a') + 10;
++		else if (*arg >= 'A' && *arg <= 'F')
++			digit = (unsigned)(*arg - 'A') + 10;
++		else
++			return -1;
++
++		if (digit >= base || result > (~0ULL - digit) / base)
++			return -1;
++
++		result = result * base + digit;
++		have_digit = true;
++		arg++;
++	}
++
++	if (!have_digit)
++		return -1;
++
++	*value = result;
++	return 0;
++}
++
 +void cmd_fetch_partition(const char *arg, void *data, unsigned sz)
 +{
 +	char part_name[64];
 +	char *offset_arg;
 +	char *size_arg;
 +	u64 part_size;
-+	unsigned long offset;
-+	unsigned long fetch_size;
++	u64 offset;
++	u64 fetch_size;
 +	ssize_t read_len;
 +
 +	if (arg == NULL || arg[0] == '\0') {
@@ -630,6 +692,10 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +		return;
 +	}
 +	*size_arg++ = '\0';
++	if (!fastboot_fetch_partition_allowed(part_name)) {
++		fastboot_fail("partition is not fetchable");
++		return;
++	}
 +
 +	part_size = partition_get_size_by_name(part_name);
 +	if (part_size == 0) {
@@ -637,13 +703,16 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +		return;
 +	}
 +
-+	offset = strtoul(offset_arg, NULL, 0);
-+	fetch_size = strtoul(size_arg, NULL, 0);
++	if (fastboot_parse_u64(offset_arg, &offset) ||
++		fastboot_parse_u64(size_arg, &fetch_size)) {
++		fastboot_fail("bad fetch range");
++		return;
++	}
 +	if (fetch_size == 0 || fetch_size > FASTBOOT_FETCH_MAX_SIZE) {
 +		fastboot_fail("bad fetch size");
 +		return;
 +	}
-+	if ((u64)offset >= part_size || (u64)offset + fetch_size > part_size) {
++	if (offset >= part_size || fetch_size > part_size - offset) {
 +		fastboot_fail("fetch out of range");
 +		return;
 +	}
@@ -652,14 +721,15 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +		return;
 +	}
 +
-+	dprintf(ALWAYS,
-+		"[fastboot_fetch] %s off=0x%lx size=0x%lx base=0x%x\n",
-+		part_name, offset, fetch_size, (unsigned int)download_base);
++	if (offset == 0)
++		dprintf(ALWAYS,
++			"[fastboot_fetch] %s start total=0x%llx chunk=0x%llx\n",
++			part_name, part_size, fetch_size);
 +	read_len = partition_read(part_name, (off_t)offset, (u8 *)download_base,
 +		(size_t)fetch_size);
 +	if (read_len != (ssize_t)fetch_size) {
 +		dprintf(ALWAYS,
-+			"[fastboot_fetch] read failed: %d/0x%lx\n",
++			"[fastboot_fetch] read failed: %d/0x%llx\n",
 +			(int)read_len, fetch_size);
 +		fastboot_fail("fetch read failed");
 +		return;
@@ -668,6 +738,8 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +	download_size = (unsigned)fetch_size;
 +	if (fastboot_upload_buffer(download_base, download_size) < 0)
 +		return;
++	if (offset + fetch_size == part_size)
++		dprintf(ALWAYS, "[fastboot_fetch] %s complete\n", part_name);
 +
 +	fastboot_okay("");
 +}
@@ -688,7 +760,36 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
  static void fastboot_command_loop(void)
  {
  	struct fastboot_cmd *cmd;
-@@ -775,6 +972,8 @@ int fastboot_init(void *base, unsigned size)
+ 	int r;
++	bool quiet_fetch;
+ 	dprintf(ALWAYS,"fastboot: processing commands\n");
+ 
+ again:
+@@ -402,8 +672,11 @@ again:
+ 		r = usb_read(buffer, MAX_RSP_SIZE);
+ 		if (r < 0) break; //no input command
+ 		buffer[r] = 0;
+-		dprintf(ALWAYS,"[fastboot: command buf]-[%s]-[len=%d]\n", buffer, r);
+-		dprintf(ALWAYS,"[fastboot]-[download_base:0x%x]-[download_size:0x%x]\n",(unsigned int)download_base,(unsigned int)download_size);
++		quiet_fetch = !strncmp((const char *)buffer, "fetch:", 6);
++		if (!quiet_fetch) {
++			dprintf(ALWAYS,"[fastboot: command buf]-[%s]-[len=%d]\n", buffer, r);
++			dprintf(ALWAYS,"[fastboot]-[download_base:0x%x]-[download_size:0x%x]\n",(unsigned int)download_base,(unsigned int)download_size);
++		}
+ 
+ 		/*Pick up matched command and handle it*/
+ 		for (cmd = cmdlist; cmd; cmd = cmd->next) {
+@@ -412,7 +685,8 @@ again:
+ 				continue;
+ 			}
+ 
+-			dprintf(ALWAYS,"[Cmd process]-[buf:%s]-[lenBuf:%s]\n", buffer,  buffer + cmd->prefix_len);
++			if (!quiet_fetch)
++				dprintf(ALWAYS,"[Cmd process]-[buf:%s]-[lenBuf:%s]\n", buffer,  buffer + cmd->prefix_len);
+ #ifdef MTK_SECURITY_SW_SUPPORT
+ 			extern unsigned int seclib_sec_boot_enabled(unsigned int);
+ 			//if security boot enable, check cmd allowed
+@@ -775,6 +1049,8 @@ int fastboot_init(void *base, unsigned size)
  	thread_t *thr;
  	int ret;
  	static char dl_max_str[11];  // Take NULL and leading 0x into account. SCRATCH_SIZE must be <= 32-bits
@@ -697,7 +798,7 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
  
  	dprintf(ALWAYS, "fastboot_init()\n");
  
-@@ -819,6 +1018,15 @@ int fastboot_init(void *base, unsigned size)
+@@ -819,6 +1095,15 @@ int fastboot_init(void *base, unsigned size)
  	fastboot_publish("serialno", sn_buf);
  
  	register_partition_var();
@@ -713,7 +814,7 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
  
  	update_device_info();
  	fastboot_publish("battery-voltage", (const char *) battery_voltage);
-@@ -830,7 +1038,15 @@ int fastboot_init(void *base, unsigned size)
+@@ -830,7 +1115,17 @@ int fastboot_init(void *base, unsigned size)
  
  	/*LXO: Download related command*/
  	fastboot_register("download:", cmd_download, TRUE, FALSE);
@@ -726,16 +827,18 @@ index 495b7b8901490be35d5acd10cf578f7aa58d40b6..ccae5612eaad17093582a007fad65e58
 +	snprintf(fetch_max_str, sizeof(fetch_max_str), "0x%x",
 +		FASTBOOT_FETCH_MAX_SIZE);
 +	fastboot_publish("max-fetch-size", fetch_max_str);
++	fastboot_publish("fetch-partitions",
++		"expdb,boot,recovery,dtbo,system,vendor");
  	/*LXO: END!Download related command*/
  
  	fastboot_oem_register();
-@@ -932,4 +1148,3 @@ fail_alloc_in:
+@@ -932,4 +1227,3 @@ fail_alloc_in:
  	ASSERT(0);
  	return ret;
  }
 -
 diff --git a/app/mt_boot/fdt_op.c b/app/mt_boot/fdt_op.c
-index 14ed6c04970a2e2914e41b3b6d5dc1dbfb55ef4b..aa794f440177e52712229f11d159f6e92230d504 100644
+index 14ed6c0..aa794f4 100644
 --- a/app/mt_boot/fdt_op.c
 +++ b/app/mt_boot/fdt_op.c
 @@ -61,6 +61,7 @@
@@ -777,7 +880,7 @@ index 14ed6c04970a2e2914e41b3b6d5dc1dbfb55ef4b..aa794f440177e52712229f11d159f6e9
  
  #if defined(CFG_DTB_EARLY_LOADER_SUPPORT)
 diff --git a/app/mt_boot/mt_boot.c b/app/mt_boot/mt_boot.c
-index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f629028fd 100644
+index 0c83cc2..1255d5a 100644
 --- a/app/mt_boot/mt_boot.c
 +++ b/app/mt_boot/mt_boot.c
 @@ -77,6 +77,7 @@
@@ -1476,7 +1579,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  
  #ifdef USER_LOAD
  	//For not intruding user load, print LK log in a whole here, when triggered.
-@@ -1541,85 +2071,1014 @@ void get_AB_OTA_name(char *part_name, int size)
+@@ -1541,85 +2071,1016 @@ void get_AB_OTA_name(char *part_name, int size)
  }
  #endif /* MTK_AB_OTA_UPDATER */
  
@@ -2452,6 +2555,8 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
 +		ramdisk_real_sz, tags_target_addr,
 +		g_boot_arg ? g_boot_arg->boot_reason : 0,
 +		g_boot_arg ? boot_reason_name(g_boot_arg->boot_reason) : "unknown");
++	/* Preserve the handoff record even when a RAM-booted kernel never reboots. */
++	save_pllk_log();
 +
 +	if (ready_to_boot)
 +		ready_to_boot();
@@ -2559,7 +2664,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  
  #ifdef MTK_3LEVEL_PAGETABLE
  	/* rootfs addr */
-@@ -1633,13 +3092,16 @@ int boot_linux_from_storage(void)
+@@ -1633,13 +3094,16 @@ int boot_linux_from_storage(void)
  		uint32_t ramdisk_compressed_sz;
  		load_vfy_ramdisk(&ramdisk_compressed_sz);
  		ramdisk_real_sz = ramdisk_compressed_sz;
@@ -2579,7 +2684,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  	/*
  	 * merge dtb's bootargs with customized cmdline
  	 * as early as possible
-@@ -1649,7 +3111,10 @@ int boot_linux_from_storage(void)
+@@ -1649,7 +3113,10 @@ int boot_linux_from_storage(void)
  	custom_port_in_kernel(g_boot_mode, cmdline_get());
  
  	/* append cmdline from bootimg hdr */
@@ -2591,7 +2696,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  
  #ifdef SELINUX_STATUS
  #if SELINUX_STATUS == 1
-@@ -1668,12 +3133,18 @@ int boot_linux_from_storage(void)
+@@ -1668,12 +3135,18 @@ int boot_linux_from_storage(void)
  	* should also be passed to kernel through cmdline, only seen in normal mode
  	*/
  	if (g_boot_mode == NORMAL_BOOT) {
@@ -2612,7 +2717,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  	}
  
  	// MTK read printk ratelimit config
-@@ -1688,7 +3159,9 @@ int boot_linux_from_storage(void)
+@@ -1688,7 +3161,9 @@ int boot_linux_from_storage(void)
  	  * enabled in A/B system.
  	  */
  #if !defined(MTK_RECOVERY_RAMDISK_SPLIT)
@@ -2623,7 +2728,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  		cmdline_append("androidboot.force_normal_boot=1");
  #endif
  #endif
-@@ -1703,6 +3176,14 @@ int boot_linux_from_storage(void)
+@@ -1703,6 +3178,14 @@ int boot_linux_from_storage(void)
  	/* pass related root of trust info via SMC call */
  	send_root_of_trust_info();
  
@@ -2638,7 +2743,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  	boot_linux((void *)kernel_target_addr,
  			(unsigned *)tags_target_addr,
  		   	board_machtype(),
-@@ -1755,23 +3236,81 @@ int get_serial(u64 hwkey, u32 chipid, char ser[SERIALNO_LEN])
+@@ -1755,23 +3238,81 @@ int get_serial(u64 hwkey, u32 chipid, char ser[SERIALNO_LEN])
  #endif /* CONFIG_MTK_USB_UNIQUE_SERIAL */
  
  #ifdef SERIAL_NUM_FROM_BARCODE
@@ -2727,7 +2832,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  #endif
  
  #ifdef CONFIG_MTK_USB_UNIQUE_SERIAL
-@@ -1867,7 +3406,7 @@ static void set_serial_num(void)
+@@ -1867,7 +3408,7 @@ static void set_serial_num(void)
  #endif  // SERIAL_NUM_FROM_BARCODE
  
  set_serialno:
@@ -2736,7 +2841,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  	surf_udc_device.serialno = sn_buf;
  }
  
-@@ -1886,8 +3425,10 @@ void mt_boot_init(const struct app_descriptor *app)
+@@ -1886,8 +3427,10 @@ void mt_boot_init(const struct app_descriptor *app)
  	goto lk_debug;
  #endif
  
@@ -2749,7 +2854,7 @@ index 0c83cc265266dac039f04887a13ebe7593f04388..5a34812fe41860896325502d9e6d764f
  #ifdef MTK_SECURITY_SW_SUPPORT
  #if MTK_FORCE_VERIFIED_BOOT_SIG_VFY
 diff --git a/app/mt_boot/mt_boot.h b/app/mt_boot/mt_boot.h
-index 2933084f21a376ced569d8c4e7c04b84ed9c0ad3..3b5f0a0d56ac2d00cfd64eeba8b68b5a645cf3e4 100644
+index 2933084..3b5f0a0 100644
 --- a/app/mt_boot/mt_boot.h
 +++ b/app/mt_boot/mt_boot.h
 @@ -37,6 +37,11 @@
@@ -2770,7 +2875,7 @@ index 2933084f21a376ced569d8c4e7c04b84ed9c0ad3..3b5f0a0d56ac2d00cfd64eeba8b68b5a
  #endif  // _MT_BOOT_H_
 -
 diff --git a/app/mt_boot/sys_commands.c b/app/mt_boot/sys_commands.c
-index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a981966d415 100644
+index 3bc3076..36eb87d 100644
 --- a/app/mt_boot/sys_commands.c
 +++ b/app/mt_boot/sys_commands.c
 @@ -57,6 +57,7 @@
@@ -2828,7 +2933,7 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
  }
  
  void cmd_reboot_fastboot(const char *arg, void *data, unsigned sz)
-@@ -608,31 +626,58 @@ extern unsigned int g_kmem_off;
+@@ -608,31 +626,73 @@ extern unsigned int g_kmem_off;
  extern unsigned int g_rmem_off;
  extern unsigned int g_bimg_sz;
  #define ROUND_TO_PAGE(x,y) (((x) + (y)) & (~(y)))
@@ -2841,25 +2946,39 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
 +	mtk_wdt_restart();
 +}
 +
-+static BOOTMODE cmd_boot_detect_mode(const char *arg, const struct bootimg_hdr *boot_hdr)
++static BOOTMODE cmd_boot_detect_mode(const char *arg,
++		const struct bootimg_hdr *boot_hdr, const char **reason)
 +{
 +	char cmdline[BOOTIMG_ARGS_SZ + BOOT_EXTRA_ARGS_SIZE + 1];
 +
-+	if (arg && strstr(arg, "recovery"))
++	if (arg && strstr(arg, "recovery")) {
++		*reason = "command";
 +		return RECOVERY_BOOT;
++	}
 +
-+	if (boot_hdr->ramdisk_sz == 0)
-+		return NORMAL_BOOT;
++	/* Header v1/v2 recovery images carry the recovery overlay explicitly. */
++	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_ONE &&
++		boot_hdr->header_version <= BOOT_HEADER_VERSION_TWO &&
++		boot_hdr->recovery_dtbo_size != 0) {
++		*reason = "recovery_dtbo";
++		return RECOVERY_BOOT;
++	}
 +
 +	memset(cmdline, 0, sizeof(cmdline));
 +	memcpy(cmdline, boot_hdr->cmdline, BOOTIMG_ARGS_SZ);
 +	memcpy(cmdline + BOOTIMG_ARGS_SZ, boot_hdr->extra_cmdline,
 +	       BOOT_EXTRA_ARGS_SIZE);
 +
-+	if (strstr(cmdline, "skip_initramfs"))
-+		return NORMAL_BOOT;
++	if (strstr(cmdline, "androidboot.mode=recovery") ||
++		strstr(cmdline, "bootmode=recovery") ||
++		strstr(cmdline, "recoverymode=1")) {
++		*reason = "cmdline";
++		return RECOVERY_BOOT;
++	}
 +
-+	return RECOVERY_BOOT;
++	/* A ramdisk is valid in a normal boot image; it is not a recovery marker. */
++	*reason = "default_normal";
++	return NORMAL_BOOT;
 +}
 +
  void cmd_boot(const char *arg, void *data, unsigned sz)
@@ -2873,6 +2992,7 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
 -#define CMDLINE_TMP_CONCAT_SIZE 100     //only for string concat, 100 bytes is enough
 -	char cmdline_tmpbuf[CMDLINE_TMP_CONCAT_SIZE];
 +	BOOTMODE boot_mode;
++	const char *boot_mode_reason = "unknown";
 +	int ret;
  
 -	boot_hdr = (struct bootimg_hdr *)malloc(sizeof(struct bootimg_hdr));
@@ -2891,7 +3011,7 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
 -	memcpy(boot_hdr, data, sizeof(struct bootimg_hdr));
 -	load_bootinfo_bootimg(data);
 +	boot_hdr = (struct bootimg_hdr *)data;
-+	boot_mode = cmd_boot_detect_mode(arg, boot_hdr);
++	boot_mode = cmd_boot_detect_mode(arg, boot_hdr, &boot_mode_reason);
  
  	dprintf(INFO,
  		"\n============================================================\n");
@@ -2901,12 +3021,14 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
  		boot_hdr->magic);
  	dprintf(INFO, "[%s] Android Boot IMG Hdr - Kernel Size 	: 0x%x\n", MODULE_NAME,
  		boot_hdr->kernel_sz);
-@@ -642,134 +687,13 @@ void cmd_boot(const char *arg, void *data, unsigned sz)
+@@ -642,134 +702,15 @@ void cmd_boot(const char *arg, void *data, unsigned sz)
  		boot_hdr->ramdisk_sz);
  	dprintf(INFO, "[%s] Android Boot IMG Hdr - Page Size    	: 0x%x\n", MODULE_NAME,
  		boot_hdr->page_sz);
-+	dprintf(CRITICAL, "[FASTBOOT_BOOT] mode=%d size=0x%x ramdisk=0x%x\n",
-+		boot_mode, sz, boot_hdr->ramdisk_sz);
++	dprintf(CRITICAL,
++		"[FASTBOOT_BOOT] mode=%d reason=%s size=0x%x ramdisk=0x%x recovery_dtbo=0x%x\n",
++		boot_mode, boot_mode_reason, sz, boot_hdr->ramdisk_sz,
++		boot_hdr->recovery_dtbo_size);
  	dprintf(INFO, "============================================================\n");
  
 -	/* ensure commandline is terminated */
@@ -3042,7 +3164,7 @@ index 3bc30761f5d6275d07e246a2347ab074df55ecc6..61b474c36f003ce71c5610e6cffa0a98
  
  }
 diff --git a/arch/arm/crt0.S b/arch/arm/crt0.S
-index c376c4d49818fe2a83afa770ece643b1d356bd73..b0041eab1d53bd0ce55903f0b21ac66f161719e0 100644
+index c376c4d..b0041ea 100644
 --- a/arch/arm/crt0.S
 +++ b/arch/arm/crt0.S
 @@ -42,11 +42,11 @@ BOOT_ARGUMENT_LOCATION:
@@ -3081,7 +3203,7 @@ index c376c4d49818fe2a83afa770ece643b1d356bd73..b0041eab1d53bd0ce55903f0b21ac66f
  .align 2
  	/* the abort stack is for unrecoverable errors.
 diff --git a/arch/arm/trustzone-system-onesegment.ld b/arch/arm/trustzone-system-onesegment.ld
-index 604c93e01c47e253a921eb1217bc7747e2c41041..6e4226ac736b43e1a5c1ca04a2c90598c7adc59c 100644
+index 604c93e..6e4226a 100644
 --- a/arch/arm/trustzone-system-onesegment.ld
 +++ b/arch/arm/trustzone-system-onesegment.ld
 @@ -8,6 +8,11 @@ SECTIONS
@@ -3109,7 +3231,7 @@ index 604c93e01c47e253a921eb1217bc7747e2c41041..6e4226ac736b43e1a5c1ca04a2c90598
  		*(.rodata .rodata.* .gnu.linkonce.r.*)
  		. = ALIGN(4);
 diff --git a/arch/arm/trustzone-test-system-onesegment.ld b/arch/arm/trustzone-test-system-onesegment.ld
-index f7c9dbbdc4a9634c9ad1fd8d60c62f0c9d4f58ab..5c20d1717ba008f8141ab84f0576d4f7e27152a1 100644
+index f7c9dbb..5c20d17 100644
 --- a/arch/arm/trustzone-test-system-onesegment.ld
 +++ b/arch/arm/trustzone-test-system-onesegment.ld
 @@ -9,6 +9,11 @@ SECTIONS
@@ -3138,7 +3260,7 @@ index f7c9dbbdc4a9634c9ad1fd8d60c62f0c9d4f58ab..5c20d1717ba008f8141ab84f0576d4f7
  		. = ALIGN(4);
 diff --git a/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/Makefile b/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/Makefile
 new file mode 100644
-index 0000000000000000000000000000000000000000..f133463d349b53959ac7a659d6dcc7cdb45e476f
+index 0000000..f133463
 --- /dev/null
 +++ b/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/Makefile
 @@ -0,0 +1,6 @@
@@ -3150,7 +3272,7 @@ index 0000000000000000000000000000000000000000..f133463d349b53959ac7a659d6dcc7cd
 +obj-y += ili9881c_hd_dsi_vdo_txd_boe_zal1890.o
 diff --git a/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/ili9881c_hd_dsi_vdo_txd_boe_zal1890.c b/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/ili9881c_hd_dsi_vdo_txd_boe_zal1890.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..91519a736cb0e41660ebfb157959eb87f7855792
+index 0000000..91519a7
 --- /dev/null
 +++ b/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/ili9881c_hd_dsi_vdo_txd_boe_zal1890.c
 @@ -0,0 +1,995 @@
@@ -4150,7 +4272,7 @@ index 0000000000000000000000000000000000000000..91519a736cb0e41660ebfb157959eb87
 +	.set_backlight_cmdq = lcm_setbacklight_cmdq,
 +};
 diff --git a/dev/lcm/mt65xx_lcm_list.c b/dev/lcm/mt65xx_lcm_list.c
-index f81820f58a961bc5a9ef0a8c5fe8449e8411b2f6..b6f5305fde6fcaef45e005ff11a0e4aaf0f9dba9 100755
+index f81820f..b6f5305 100755
 --- a/dev/lcm/mt65xx_lcm_list.c
 +++ b/dev/lcm/mt65xx_lcm_list.c
 @@ -56,6 +56,7 @@ extern LCM_DRIVER hct_rm68200_dsi_vdo_hd_cpt;
@@ -4185,7 +4307,7 @@ index f81820f58a961bc5a9ef0a8c5fe8449e8411b2f6..b6f5305fde6fcaef45e005ff11a0e4aa
  #ifdef BUILD_LK
  extern void mdelay(unsigned long msec);
 diff --git a/dev/logo/rules.mk b/dev/logo/rules.mk
-index f7d7047c65c109ccff89a0d5cb816f60c0d53356..7aa76e6b91f6abf47ca36a758767f149fb9ec6de 100644
+index f7d7047..7aa76e6 100644
 --- a/dev/logo/rules.mk
 +++ b/dev/logo/rules.mk
 @@ -227,7 +227,9 @@ GENERATED += \
@@ -4199,7 +4321,7 @@ index f7d7047c65c109ccff89a0d5cb816f60c0d53356..7aa76e6b91f6abf47ca36a758767f149
  $(LOGO_IMAGE):$(MKIMG) $(BOOT_LOGO_RESOURCE)
  	@echo "MKING $(LOGO_IMAGE) start"
 diff --git a/gcc/bin/arm-linux-androideabi-gcc b/gcc/bin/arm-linux-androideabi-gcc
-index 987c8b02e52b6718da9e9e9f583810b4bcfb8921..9e86aa8c98bb8b7d97be4d56c9662f70a585facf 100755
+index 987c8b0..9e86aa8 100755
 --- a/gcc/bin/arm-linux-androideabi-gcc
 +++ b/gcc/bin/arm-linux-androideabi-gcc
 @@ -1,4 +1,4 @@
@@ -4225,7 +4347,7 @@ index 987c8b02e52b6718da9e9e9f583810b4bcfb8921..9e86aa8c98bb8b7d97be4d56c9662f70
      self.parse_custom_flags()
      self.process_gomacc_command()
 diff --git a/include/debug.h b/include/debug.h
-index bef3fd648b6a51e1d823109c00a2015afc998e75..dca7f85998f24da98bb055626b3baa1470a246e5 100644
+index bef3fd6..dca7f85 100644
 --- a/include/debug.h
 +++ b/include/debug.h
 @@ -20,7 +20,6 @@
@@ -4275,7 +4397,7 @@ index bef3fd648b6a51e1d823109c00a2015afc998e75..dca7f85998f24da98bb055626b3baa14
 -
 -#endif
 diff --git a/kernel/main.c b/kernel/main.c
-index c2655c533bcafeedd75c1be692849b3df0988ef2..381e1f69c0955a25cf3d30323c01b5456613a8ad 100644
+index c2655c5..381e1f6 100644
 --- a/kernel/main.c
 +++ b/kernel/main.c
 @@ -34,6 +34,10 @@
@@ -4490,7 +4612,7 @@ index c2655c533bcafeedd75c1be692849b3df0988ef2..381e1f69c0955a25cf3d30323c01b545
  	dprintf(INFO, "welcome to lk\n\n");
  	dprintf(INFO, "LK_VER_TAG = %s\n", LK_VER_TAG);
 diff --git a/lib/libfdt/rules.mk b/lib/libfdt/rules.mk
-index c50ebbf18c9d6a6bc02cb47c68a31b6686222c32..7d465cb4d3f611ebe1f0dcf9f1e74a843ca6b530 100755
+index c50ebbf..7d465cb 100755
 --- a/lib/libfdt/rules.mk
 +++ b/lib/libfdt/rules.mk
 @@ -9,4 +9,5 @@ OBJS += \
@@ -4501,7 +4623,7 @@ index c50ebbf18c9d6a6bc02cb47c68a31b6686222c32..7d465cb4d3f611ebe1f0dcf9f1e74a84
 +	$(LOCAL_DIR)/fdt_overlay.o \
 +	$(LOCAL_DIR)/fdt_empty_tree.o
 diff --git a/lib/mblock/mblock_v2.c b/lib/mblock/mblock_v2.c
-index 3aea8128c4cbd48ecaffb53142cf6338296ecdbe..80dbc2bb2f7b8790919a84c37e06a4b45fa5c162 100644
+index 3aea812..80dbc2b 100644
 --- a/lib/mblock/mblock_v2.c
 +++ b/lib/mblock/mblock_v2.c
 @@ -248,13 +248,16 @@ u64 mblock_reserve_ext(mblock_info_t *mblock_info, u64 reserved_size, u64 align,
@@ -4546,7 +4668,7 @@ index 3aea8128c4cbd48ecaffb53142cf6338296ecdbe..80dbc2bb2f7b8790919a84c37e06a4b4
  	return reserved_addr;
  }
 diff --git a/make/build.mk b/make/build.mk
-index 9f102ee68a3b40a007ed5e5b8fac21b4832b6dc5..fb51dc2b5de228237cb997c84a663040e1a37d69 100644
+index 9f102ee..fb51dc2 100644
 --- a/make/build.mk
 +++ b/make/build.mk
 @@ -21,11 +21,19 @@ $(OUTELF)-dtb.img: $(OUTBIN)
@@ -4575,7 +4697,7 @@ index 9f102ee68a3b40a007ed5e5b8fac21b4832b6dc5..fb51dc2b5de228237cb997c84a663040
  include arch/$(ARCH)/compile.mk
 -
 diff --git a/makefile b/makefile
-index 1d76b91b3828098823b0a251010778cd1e4bb9de..cfed5a3489f8f47e36fcb8795c2881de95acf947 100644
+index 1d76b91..cfed5a3 100644
 --- a/makefile
 +++ b/makefile
 @@ -17,7 +17,7 @@ ifneq ($(wildcard project/$(project-name).mk),)
@@ -4623,7 +4745,7 @@ index 1d76b91b3828098823b0a251010778cd1e4bb9de..cfed5a3489f8f47e36fcb8795c2881de
  # default to no ccache
  CCACHE ?=
 diff --git a/platform/common/RoT/avb_RoT.c b/platform/common/RoT/avb_RoT.c
-index 9109e852b83a43b98a2fec797ca62c45aacaf965..56db2225ec26880e88699b2b1e6fbe41215e7190 100644
+index 9109e85..56db222 100644
 --- a/platform/common/RoT/avb_RoT.c
 +++ b/platform/common/RoT/avb_RoT.c
 @@ -39,6 +39,7 @@
@@ -4707,7 +4829,7 @@ index 9109e852b83a43b98a2fec797ca62c45aacaf965..56db2225ec26880e88699b2b1e6fbe41
  	if (!smc_ret)
  		pal_log_err("Warning! root of trust smc call is not locked : 0x%x\n", smc_ret);
 diff --git a/platform/common/boot/avb20/load_vfy_boot.c b/platform/common/boot/avb20/load_vfy_boot.c
-index cc98e592d7f56a07a2d0e6f3927aee35e2f676cc..8945aab282779ea6707826373b4d5032b97c1b1d 100644
+index cc98e59..8945aab 100644
 --- a/platform/common/boot/avb20/load_vfy_boot.c
 +++ b/platform/common/boot/avb20/load_vfy_boot.c
 @@ -53,6 +53,7 @@
@@ -5258,7 +5380,7 @@ index cc98e592d7f56a07a2d0e6f3927aee35e2f676cc..8945aab282779ea6707826373b4d5032
  }
 -
 diff --git a/platform/common/boot/boot_info.c b/platform/common/boot/boot_info.c
-index 281d4e587fe8c0a5ff3300ef3af1c4cb87760ea7..22c3aee9d4254b144bf0a36ace141b274d39323d 100644
+index 281d4e5..22c3aee 100644
 --- a/platform/common/boot/boot_info.c
 +++ b/platform/common/boot/boot_info.c
 @@ -86,6 +86,8 @@ int load_bootinfo_bootimg(void *bootimg_addr)
@@ -5318,7 +5440,7 @@ index 281d4e587fe8c0a5ff3300ef3af1c4cb87760ea7..22c3aee9d4254b144bf0a36ace141b27
  			pal_log_err("%s:zimage_size=0x%08x, g_boot_info.dtb_img_size=0x%08x\n", __func__,
  					zimage_size, g_boot_info.dtb_img_size);
 diff --git a/platform/common/boot/vboot_state.c b/platform/common/boot/vboot_state.c
-index 5017bfb5bfa8363a78ae75d9e388d0773478327e..8be7afa05f4a375a25288d9714f0f47720510abd 100644
+index 5017bfb..8be7afa 100644
 --- a/platform/common/boot/vboot_state.c
 +++ b/platform/common/boot/vboot_state.c
 @@ -129,6 +129,11 @@ int orange_state_warning(void)
@@ -5339,7 +5461,7 @@ index 5017bfb5bfa8363a78ae75d9e388d0773478327e..8be7afa05f4a375a25288d9714f0f477
  }
 -
 diff --git a/platform/common/include/log_store_lk.h b/platform/common/include/log_store_lk.h
-index 97faa09641826522eb57b71cd5880340afc4ad9c..ef907383d4c34254a9d8a16efdecc2d0b586ca4b 100644
+index 97faa09..ef90738 100644
 --- a/platform/common/include/log_store_lk.h
 +++ b/platform/common/include/log_store_lk.h
 @@ -132,6 +132,22 @@ struct log_emmc_header {
@@ -5398,7 +5520,7 @@ index 97faa09641826522eb57b71cd5880340afc4ad9c..ef907383d4c34254a9d8a16efdecc2d0
  #endif
 -
 diff --git a/platform/common/include/recovery.h b/platform/common/include/recovery.h
-index ed19597af7f707d18a3a3bb88894d3929c7d9920..b99a85190a3cb90c428cbe66d6ef5ac483b753df 100644
+index ed19597..b99a851 100644
 --- a/platform/common/include/recovery.h
 +++ b/platform/common/include/recovery.h
 @@ -44,6 +44,9 @@ struct misc_message {
@@ -5417,7 +5539,7 @@ index ed19597af7f707d18a3a3bb88894d3929c7d9920..b99a85190a3cb90c428cbe66d6ef5ac4
  #endif /* _RECOVERY_H_ */
 -
 diff --git a/platform/common/lk_main_dtb_loader/lk_builtin_dtb.c b/platform/common/lk_main_dtb_loader/lk_builtin_dtb.c
-index 15494164fa387be1f5b36cff05612b66747ab418..69b884cd07f0326d045f9e5ec79996d4b3b54795 100644
+index 1549416..69b884c 100644
 --- a/platform/common/lk_main_dtb_loader/lk_builtin_dtb.c
 +++ b/platform/common/lk_main_dtb_loader/lk_builtin_dtb.c
 @@ -51,6 +51,7 @@
@@ -5557,7 +5679,7 @@ index 15494164fa387be1f5b36cff05612b66747ab418..69b884cd07f0326d045f9e5ec79996d4
  	return (void *)lk_overlayed_dtb_addr;
  }
 diff --git a/platform/common/log_store/log_store_lk.c b/platform/common/log_store/log_store_lk.c
-index 059bb39a4817c7e1fa77ce52234c0a521aea0a24..3e66070db76cf57e8262e28f02721e863b4901b3 100644
+index 059bb39..3e66070 100644
 --- a/platform/common/log_store/log_store_lk.c
 +++ b/platform/common/log_store/log_store_lk.c
 @@ -35,19 +35,45 @@
@@ -6091,8 +6213,23 @@ index 059bb39a4817c7e1fa77ce52234c0a521aea0a24..3e66070db76cf57e8262e28f02721e86
 +{
 +	save_pllk_log_common(true);
 +}
+diff --git a/platform/common/mt_musb/mt_musb.c b/platform/common/mt_musb/mt_musb.c
+index 142776e..c82a8ed 100644
+--- a/platform/common/mt_musb/mt_musb.c
++++ b/platform/common/mt_musb/mt_musb.c
+@@ -1893,7 +1893,9 @@ int udc_request_queue(struct udc_endpoint *ept, struct udc_request *req)
+ 		ept->tx_urb->actual_length = req->length;
+ 
+ #ifdef SUPPORT_QMU /* For QMU, we don't call mt_ep_write() */
+-		mu3d_hal_insert_transfer_gpd(ept->num, USB_DIR_IN, ept->tx_urb->buffer, req->length, true, true, false, (ept->type == USB_EP_XFER_ISO ? 0 : 1), ept->maxpkt);
++		/* PC-side fastboot reads an exact DATA length; a trailing ZLP is
++		 * interpreted as an empty status packet before the following OKAY. */
++		mu3d_hal_insert_transfer_gpd(ept->num, USB_DIR_IN, ept->tx_urb->buffer, req->length, true, true, false, 0, ept->maxpkt);
+ 		arch_clean_invalidate_cache_range((addr_t) ept->tx_urb->buffer, req->length);
+ 		mu3d_hal_resume_qmu(ept->num, USB_DIR_IN);
+ #else   /* For PIO, call mt_ep_write() */
 diff --git a/platform/common/partition/efi.c b/platform/common/partition/efi.c
-index 84c182320922be312ad99a325cbee799e56e3c06..473660dfa16caafce33852dacb5d38da061ab5b5 100644
+index 84c1823..473660d 100644
 --- a/platform/common/partition/efi.c
 +++ b/platform/common/partition/efi.c
 @@ -38,6 +38,14 @@
@@ -6185,7 +6322,7 @@ index 84c182320922be312ad99a325cbee799e56e3c06..473660dfa16caafce33852dacb5d38da
  
  static void pack_pmbr_data(void *ptr)
 diff --git a/platform/common/partition/part_common.c b/platform/common/partition/part_common.c
-index 2770595e2c653da12a8a0d43edf44e84ccdb1dc7..4136d21eec4fa8768564efbb9590bc4f4d6748a1 100644
+index 2770595..4136d21 100644
 --- a/platform/common/partition/part_common.c
 +++ b/platform/common/partition/part_common.c
 @@ -412,6 +412,33 @@ int part_init(part_dev_t *dev)
@@ -6238,7 +6375,7 @@ index 2770595e2c653da12a8a0d43edf44e84ccdb1dc7..4136d21eec4fa8768564efbb9590bc4f
  }
 -
 diff --git a/platform/common/power/mt6370_pmu_bled.c b/platform/common/power/mt6370_pmu_bled.c
-index d16ff810cb7b9289a5619a0a18963b96e80ed65c..9c46b28b47258eb02d8afe88a50398effd172f90 100644
+index d16ff81..9c46b28 100644
 --- a/platform/common/power/mt6370_pmu_bled.c
 +++ b/platform/common/power/mt6370_pmu_bled.c
 @@ -44,9 +44,9 @@
@@ -6265,7 +6402,7 @@ index d16ff810cb7b9289a5619a0a18963b96e80ed65c..9c46b28b47258eb02d8afe88a50398ef
  }
  
 diff --git a/platform/common/recovery.c b/platform/common/recovery.c
-index 84e0ce0c8521c565c900c4020a53a768b14aa5a3..ccd050d42cf1508f31356d941f92ddf57703380e 100644
+index 84e0ce0..ccd050d 100644
 --- a/platform/common/recovery.c
 +++ b/platform/common/recovery.c
 @@ -99,7 +99,7 @@ static int mboot_recovery_set_misc(uint32_t *misc_addr, uint32_t size)
@@ -6334,7 +6471,7 @@ index 84e0ce0c8521c565c900c4020a53a768b14aa5a3..ccd050d42cf1508f31356d941f92ddf5
  #endif
 -
 diff --git a/platform/common/storage/mmc/msdc_irq.c b/platform/common/storage/mmc/msdc_irq.c
-index cb95f9a27d1d442e29d00e61745505e1710a5546..e4f32308463f5adf447a724400ef0b5407bbd994 100644
+index cb95f9a..e4f3230 100644
 --- a/platform/common/storage/mmc/msdc_irq.c
 +++ b/platform/common/storage/mmc/msdc_irq.c
 @@ -325,5 +325,4 @@ u32 msdc_intr_wait(struct mmc_host *host, u32 intrs)
@@ -6346,7 +6483,7 @@ index cb95f9a27d1d442e29d00e61745505e1710a5546..e4f32308463f5adf447a724400ef0b54
 +}
 \ No newline at end of file
 diff --git a/platform/common/uart/uart.c b/platform/common/uart/uart.c
-index 739d18fb0069eecea9f02bce090c1a398355cd85..4b308da50b92fb50c8be7db4db7c9270b3373691 100644
+index 739d18f..4b308da 100644
 --- a/platform/common/uart/uart.c
 +++ b/platform/common/uart/uart.c
 @@ -50,8 +50,16 @@
@@ -6678,7 +6815,7 @@ index 739d18fb0069eecea9f02bce090c1a398355cd85..4b308da50b92fb50c8be7db4db7c9270
  }
 -
 diff --git a/platform/mt6765/atags.c b/platform/mt6765/atags.c
-index 32923e12de491173d708fbdf886a923327bd817d..b2974e37ed9abb5c8900a8fb6679a4b2a15879d5 100644
+index 32923e1..b2974e3 100644
 --- a/platform/mt6765/atags.c
 +++ b/platform/mt6765/atags.c
 @@ -903,6 +903,83 @@ int target_fdt_cpus(void *fdt)
@@ -6787,7 +6924,7 @@ index 32923e12de491173d708fbdf886a923327bd817d..b2974e37ed9abb5c8900a8fb6679a4b2
  }
  
 diff --git a/platform/mt6765/boot_mode.c b/platform/mt6765/boot_mode.c
-index 985958a02977baae472b8a6ea1440c6e20401705..62999a10adc25571d57de0dd60baa1c7218d87a3 100644
+index 985958a..62999a1 100644
 --- a/platform/mt6765/boot_mode.c
 +++ b/platform/mt6765/boot_mode.c
 @@ -43,6 +43,27 @@
@@ -7123,7 +7260,7 @@ index 985958a02977baae472b8a6ea1440c6e20401705..62999a10adc25571d57de0dd60baa1c7
  
  #if 1
 diff --git a/platform/mt6765/boot_mode_menu.c b/platform/mt6765/boot_mode_menu.c
-index 086ed5b297521ae68e6b433909b06eab33cc75da..07fe1c0cb46289776b55b51907e075eea36c7087 100644
+index 086ed5b..07fe1c0 100644
 --- a/platform/mt6765/boot_mode_menu.c
 +++ b/platform/mt6765/boot_mode_menu.c
 @@ -18,16 +18,137 @@ extern BOOL recovery_check_command_trigger(void);
@@ -7278,7 +7415,7 @@ index 086ed5b297521ae68e6b433909b06eab33cc75da..07fe1c0cb46289776b55b51907e075ee
  }
 -
 diff --git a/platform/mt6765/ccci_lk_load_img_plat.c b/platform/mt6765/ccci_lk_load_img_plat.c
-index f321248437c733dc7df373fcd3372889cdb168e1..40e4bf91bc08cf3934855c9143b9d905424e5968 100644
+index f321248..40e4bf9 100644
 --- a/platform/mt6765/ccci_lk_load_img_plat.c
 +++ b/platform/mt6765/ccci_lk_load_img_plat.c
 @@ -1087,6 +1087,9 @@ long long plat_ccci_get_ld_md_plat_setting(char cfg_name[])
@@ -7338,7 +7475,7 @@ index f321248437c733dc7df373fcd3372889cdb168e1..40e4bf91bc08cf3934855c9143b9d905
  #endif
 -
 diff --git a/platform/mt6765/ddp_dsi.c b/platform/mt6765/ddp_dsi.c
-index 0b85f09cdc9d06a3847071b24b7dcca83a0ed7ff..b18f7cc38a92795fddf8404000ba959ce787d4ad 100644
+index 0b85f09..b18f7cc 100644
 --- a/platform/mt6765/ddp_dsi.c
 +++ b/platform/mt6765/ddp_dsi.c
 @@ -44,6 +44,8 @@
@@ -7375,7 +7512,7 @@ index 0b85f09cdc9d06a3847071b24b7dcca83a0ed7ff..b18f7cc38a92795fddf8404000ba959c
  
  static void lcm_udelay(UINT32 us)
 diff --git a/platform/mt6765/debug.c b/platform/mt6765/debug.c
-index a295537a69a67877064cced0b7df3c3a526c2846..ec9f0d7a1a0dda39753f3bb345b730d2ddc2f51c 100644
+index a295537..ec9f0d7 100644
 --- a/platform/mt6765/debug.c
 +++ b/platform/mt6765/debug.c
 @@ -26,16 +26,85 @@
@@ -7468,7 +7605,7 @@ index a295537a69a67877064cced0b7df3c3a526c2846..ec9f0d7a1a0dda39753f3bb345b730d2
  
  int dgetc(char *c, bool wait)
 diff --git a/platform/mt6765/disp_lcm.c b/platform/mt6765/disp_lcm.c
-index 531cd68851759fd8d4d64f85d53031d9724944b5..3abe68b316adfb390320cd518bab359910a59990 100644
+index 531cd68..3abe68b 100644
 --- a/platform/mt6765/disp_lcm.c
 +++ b/platform/mt6765/disp_lcm.c
 @@ -884,7 +884,11 @@ disp_lcm_handle* disp_lcm_probe(char* plcm_name, LCM_INTERFACE_ID lcm_id)
@@ -7515,7 +7652,7 @@ index 531cd68851759fd8d4d64f85d53031d9724944b5..3abe68b316adfb390320cd518bab3599
  }
 -
 diff --git a/platform/mt6765/include/platform/memory_layout.h b/platform/mt6765/include/platform/memory_layout.h
-index b555717391e39ccb916aeb69564ecd2fda9ddfdb..c48b4073c243d2e2be047635b7e59b00ac6b7a97 100644
+index b555717..c48b407 100644
 --- a/platform/mt6765/include/platform/memory_layout.h
 +++ b/platform/mt6765/include/platform/memory_layout.h
 @@ -31,16 +31,16 @@
@@ -7554,7 +7691,7 @@ index b555717391e39ccb916aeb69564ecd2fda9ddfdb..c48b4073c243d2e2be047635b7e59b00
  #define LK_RAMDISK_BASE			(0x51B00000)
  #ifdef MTK_RECOVERY_RAMDISK_SPLIT
 diff --git a/platform/mt6765/include/platform/mt_disp_drv.h b/platform/mt6765/include/platform/mt_disp_drv.h
-index 88bd95b216b75f8076e4d8861250a640124b882a..f8515d4d3b4f3cf5bdceae9f0a62818cb8193bb9 100644
+index 88bd95b..f8515d4 100644
 --- a/platform/mt6765/include/platform/mt_disp_drv.h
 +++ b/platform/mt6765/include/platform/mt_disp_drv.h
 @@ -66,6 +66,11 @@ UINT32 mt_disp_get_vram_size(void);
@@ -7570,7 +7707,7 @@ index 88bd95b216b75f8076e4d8861250a640124b882a..f8515d4d3b4f3cf5bdceae9f0a62818c
  const char* mt_disp_get_lcm_id(void);
  UINT32 mt_disp_get_redoffset_32bit(void);
 diff --git a/platform/mt6765/include/platform/mtk_wdt.h b/platform/mt6765/include/platform/mtk_wdt.h
-index cee3fa71e124589a2128c8afa3ca8dd54a9b230d..25a761f168f3a65d04b31db8e0da84102cd27b65 100644
+index cee3fa7..25a761f 100644
 --- a/platform/mt6765/include/platform/mtk_wdt.h
 +++ b/platform/mt6765/include/platform/mtk_wdt.h
 @@ -156,6 +156,7 @@ typedef enum wd_swsys_reset_type {
@@ -7582,7 +7719,7 @@ index cee3fa71e124589a2128c8afa3ca8dd54a9b230d..25a761f168f3a65d04b31db8e0da8410
  extern BOOL mtk_is_rgu_trigger_reset(void);
  extern void mtk_arch_reset(char mode);
 diff --git a/platform/mt6765/include/platform/primary_display.h b/platform/mt6765/include/platform/primary_display.h
-index 66196ca057f6ab12bf62bdec138675e749697efa..685b776ee88751af350fe3993c3329fe203738f3 100644
+index 66196ca..685b776 100644
 --- a/platform/mt6765/include/platform/primary_display.h
 +++ b/platform/mt6765/include/platform/primary_display.h
 @@ -185,6 +185,7 @@ int primary_display_config_input(disp_input_config* input);
@@ -7594,7 +7731,7 @@ index 66196ca057f6ab12bf62bdec138675e749697efa..685b776ee88751af350fe3993c3329fe
  int primary_display_get_info(void *dispif_info);
  int primary_display_capture_framebuffer(unsigned int *pbuf);
 diff --git a/platform/mt6765/mt_debug_dump.c b/platform/mt6765/mt_debug_dump.c
-index 3b5ba7870ea5bde631d72349cc4798316c73a46f..8e1e5b7baf8947a91037fa1aaa0965658d90add3 100644
+index 3b5ba78..8e1e5b7 100644
 --- a/platform/mt6765/mt_debug_dump.c
 +++ b/platform/mt6765/mt_debug_dump.c
 @@ -120,17 +120,88 @@ static void lk_wdt_dump(void)
@@ -7690,7 +7827,7 @@ index 3b5ba7870ea5bde631d72349cc4798316c73a46f..8e1e5b7baf8947a91037fa1aaa096565
  #endif
  }
 diff --git a/platform/mt6765/mt_disp_drv.c b/platform/mt6765/mt_disp_drv.c
-index 15573ca80cff5a3fa1ed56d807a1c9ca4e3f00f5..ec902194d04f645d67f7e41321fbdad46de0cf2a 100644
+index 15573ca..ec90219 100644
 --- a/platform/mt6765/mt_disp_drv.c
 +++ b/platform/mt6765/mt_disp_drv.c
 @@ -39,6 +39,9 @@
@@ -8071,7 +8208,7 @@ index 15573ca80cff5a3fa1ed56d807a1c9ca4e3f00f5..ec902194d04f645d67f7e41321fbdad4
  {
  	dprintf(CRITICAL,"mt_disp_adjusting_hardware_addr fb_offset_logo = %d fb_size=%d\n",fb_offset_logo,fb_size);
 diff --git a/platform/mt6765/mt_leds.c b/platform/mt6765/mt_leds.c
-index 96189f472441864683ddd7c77cab96501b588895..87ae12113cb7f738a55e9fd5e8d60a7645d73d29 100644
+index 96189f4..87ae121 100644
 --- a/platform/mt6765/mt_leds.c
 +++ b/platform/mt6765/mt_leds.c
 @@ -323,10 +323,22 @@ static int brightness_set_pmic(enum mt65xx_led_pmic pmic_type, enum led_brightne
@@ -8110,7 +8247,7 @@ index 96189f472441864683ddd7c77cab96501b588895..87ae12113cb7f738a55e9fd5e8d60a76
  //	else if (level < 0)  //level cannot < 0
  //		level = 0;
 diff --git a/platform/mt6765/mt_logo.c b/platform/mt6765/mt_logo.c
-index 673292d245d46557423ad48acb16f52e3cb9e7a1..26a5ca29fa3a84460ad75665bdb6126254a4dd22 100644
+index 673292d..26a5ca2 100644
 --- a/platform/mt6765/mt_logo.c
 +++ b/platform/mt6765/mt_logo.c
 @@ -283,4 +283,3 @@ void mt_disp_fill_rect(UINT32 left, UINT32 top,
@@ -8119,7 +8256,7 @@ index 673292d245d46557423ad48acb16f52e3cb9e7a1..26a5ca29fa3a84460ad75665bdb61262
  }
 -
 diff --git a/platform/mt6765/mt_rtc.c b/platform/mt6765/mt_rtc.c
-index 9f702e2a09e325bdfe86b9a0517c472a23428c89..73fe3b4858edd708fc135402ccd9a3319db7229b 100644
+index 9f702e2..73fe3b4 100644
 --- a/platform/mt6765/mt_rtc.c
 +++ b/platform/mt6765/mt_rtc.c
 @@ -60,10 +60,7 @@ static void RTC_Write(U16 addr, U16 data)
@@ -8155,7 +8292,7 @@ index 9f702e2a09e325bdfe86b9a0517c472a23428c89..73fe3b4858edd708fc135402ccd9a331
 +    return;
 +}
 diff --git a/platform/mt6765/mtk_key.c b/platform/mt6765/mtk_key.c
-index b676e8c0e78e019985c187cdbf71a96d8d31f871..9f38926b2a01e84357df2c5f5457195ce06d50ba 100644
+index b676e8c..9f38926 100644
 --- a/platform/mt6765/mtk_key.c
 +++ b/platform/mt6765/mtk_key.c
 @@ -68,12 +68,21 @@ void get_kpd_dts_info(void)
@@ -8181,7 +8318,7 @@ index b676e8c0e78e019985c187cdbf71a96d8d31f871..9f38926b2a01e84357df2c5f5457195c
  #ifdef MT65XX_FACTORY_KEY
  	dprintf(CRITICAL, "MT65XX_FACTORY_KEY 0x%x\n",MT65XX_FACTORY_KEY);
 diff --git a/platform/mt6765/mtk_wdt.c b/platform/mt6765/mtk_wdt.c
-index 34125c35653b2b6169cfb6c7731a7a3549c30d51..59917b4857c726c17d2a9f819b12193e6431419d 100644
+index 34125c3..59917b4 100644
 --- a/platform/mt6765/mtk_wdt.c
 +++ b/platform/mt6765/mtk_wdt.c
 @@ -46,6 +46,168 @@
@@ -8385,7 +8522,7 @@ index 34125c35653b2b6169cfb6c7731a7a3549c30d51..59917b4857c726c17d2a9f819b12193e
  void mtk_wdt_init(void)
  {
 diff --git a/platform/mt6765/partition_setting.c b/platform/mt6765/partition_setting.c
-index 0a792b5b29fbecc889e06b6e19e38fa7b111bd89..de045c4580b9770adab1b14ba3d598e72470a187 100644
+index 0a792b5..de045c4 100644
 --- a/platform/mt6765/partition_setting.c
 +++ b/platform/mt6765/partition_setting.c
 @@ -39,47 +39,49 @@
@@ -8475,7 +8612,7 @@ index 0a792b5b29fbecc889e06b6e19e38fa7b111bd89..de045c4580b9770adab1b14ba3d598e7
 +
  };
 diff --git a/platform/mt6765/platform.c b/platform/mt6765/platform.c
-index ef2c699a3ef44f118459c268cdfcfdad8a5e4d04..a173b392051707c0769a2d3cd3c3b38b013ab5c3 100644
+index ef2c699..a173b39 100644
 --- a/platform/mt6765/platform.c
 +++ b/platform/mt6765/platform.c
 @@ -44,6 +44,8 @@
@@ -9057,7 +9194,7 @@ index ef2c699a3ef44f118459c268cdfcfdad8a5e4d04..a173b392051707c0769a2d3cd3c3b38b
  }
 -
 diff --git a/platform/mt6765/primary_display.c b/platform/mt6765/primary_display.c
-index 06a5519c13e3debdef80bf70be841de59805c104..dbaedf4c137ae1068b7173e89d48bddd2f8a9c86 100644
+index 06a5519..dbaedf4 100644
 --- a/platform/mt6765/primary_display.c
 +++ b/platform/mt6765/primary_display.c
 @@ -68,6 +68,7 @@ static UINT32 display_init;
@@ -9137,7 +9274,7 @@ index 06a5519c13e3debdef80bf70be841de59805c104..dbaedf4c137ae1068b7173e89d48bddd
  {
  	unsigned int i, j=0 ;
 diff --git a/platform/mt6765/rules.mk b/platform/mt6765/rules.mk
-index d938fb4d426a9030e63a50c83324f452595b2b32..56026239a5b067afc99363c9b5b2cbfed44ee4af 100644
+index d938fb4..5602623 100644
 --- a/platform/mt6765/rules.mk
 +++ b/platform/mt6765/rules.mk
 @@ -16,7 +16,15 @@ SYSTEM_AS_ROOT = no
@@ -9158,7 +9295,7 @@ index d938fb4d426a9030e63a50c83324f452595b2b32..56026239a5b067afc99363c9b5b2cbfe
  # set kernel decompress size limit (120)
  KERNEL_DECOMPRESS_SIZE := 0x07800000
 diff --git a/platform/mt6765/write_protect.c b/platform/mt6765/write_protect.c
-index 78c4cdde1e5dde988e0bd7ef4b5855f7276d198a..510ff7da4f25ef12e9beda1e43c5fb1ba2a0134c 100644
+index 78c4cdd..510ff7d 100644
 --- a/platform/mt6765/write_protect.c
 +++ b/platform/mt6765/write_protect.c
 @@ -97,15 +97,19 @@ void set_write_protect(void)
@@ -9194,7 +9331,7 @@ index 78c4cdde1e5dde988e0bd7ef4b5855f7276d198a..510ff7da4f25ef12e9beda1e43c5fb1b
  }
 -
 diff --git a/platform/pal/inc/pal_log.h b/platform/pal/inc/pal_log.h
-index a66c5fb410d7aa9b95de2fd0759055dd520d4c27..e0a0e1847c4a50dc7b885906fd239d63c7cc0b43 100644
+index a66c5fb..e0a0e18 100644
 --- a/platform/pal/inc/pal_log.h
 +++ b/platform/pal/inc/pal_log.h
 @@ -47,9 +47,9 @@
@@ -9217,7 +9354,7 @@ index a66c5fb410d7aa9b95de2fd0759055dd520d4c27..e0a0e1847c4a50dc7b885906fd239d63
 -
 diff --git a/project/oppo6762_18540.mk b/project/oppo6762_18540.mk
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea4fc74fef4396aa59d37c7894650ba233dd70fb
+index 0000000..ea4fc74
 --- /dev/null
 +++ b/project/oppo6762_18540.mk
 @@ -0,0 +1,177 @@
@@ -9399,7 +9536,7 @@ index 0000000000000000000000000000000000000000..ea4fc74fef4396aa59d37c7894650ba2
 +	$(NOECHO)truncate -s 1048576 $@
 +	@echo flashable lk image ready: $@
 diff --git a/scripts/sign/SignTool.pl b/scripts/sign/SignTool.pl
-index 12d6b02d1365a56dd4a5e21ca9c71e0c0e05438b..d56e63088ed08837008b3e872b5864b58fb278bd 100755
+index 12d6b02..d56e630 100755
 --- a/scripts/sign/SignTool.pl
 +++ b/scripts/sign/SignTool.pl
 @@ -1,4 +1,4 @@
@@ -9410,7 +9547,7 @@ index 12d6b02d1365a56dd4a5e21ca9c71e0c0e05438b..d56e63088ed08837008b3e872b5864b5
  # This software/firmware and related documentation ("MediaTek Software") are
 diff --git a/target/oppo6762_18540/README b/target/oppo6762_18540/README
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9bae4db86a1f686304c0aa7eed739091f1fbb69
+index 0000000..c9bae4d
 --- /dev/null
 +++ b/target/oppo6762_18540/README
 @@ -0,0 +1,6 @@
@@ -9422,7 +9559,7 @@ index 0000000000000000000000000000000000000000..c9bae4db86a1f686304c0aa7eed73909
 +porting notes and safety constraints.
 diff --git a/target/oppo6762_18540/cust_display.c b/target/oppo6762_18540/cust_display.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a72071465f05b6ce7777d8b96599ec87c098107d
+index 0000000..a720714
 --- /dev/null
 +++ b/target/oppo6762_18540/cust_display.c
 @@ -0,0 +1,75 @@
@@ -9503,7 +9640,7 @@ index 0000000000000000000000000000000000000000..a72071465f05b6ce7777d8b96599ec87
 +}
 diff --git a/target/oppo6762_18540/cust_leds.c b/target/oppo6762_18540/cust_leds.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7fbfa23d9858a9797dc9c60717fd29d6592c0b1f
+index 0000000..7fbfa23
 --- /dev/null
 +++ b/target/oppo6762_18540/cust_leds.c
 @@ -0,0 +1,47 @@
@@ -9556,7 +9693,7 @@ index 0000000000000000000000000000000000000000..7fbfa23d9858a9797dc9c60717fd29d6
 +}
 diff --git a/target/oppo6762_18540/dct/dct/codegen.dws b/target/oppo6762_18540/dct/dct/codegen.dws
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b95b306e901ad83c905c5d31b299c6836b08be0
+index 0000000..7b95b30
 --- /dev/null
 +++ b/target/oppo6762_18540/dct/dct/codegen.dws
 @@ -0,0 +1,2128 @@
@@ -11690,7 +11827,7 @@ index 0000000000000000000000000000000000000000..7b95b306e901ad83c905c5d31b299c68
 +</dct_cfg>
 diff --git a/target/oppo6762_18540/fastboot_oem_commands.c b/target/oppo6762_18540/fastboot_oem_commands.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e95644b2c47768836b0e2f5d316cda39b01c849b
+index 0000000..e95644b
 --- /dev/null
 +++ b/target/oppo6762_18540/fastboot_oem_commands.c
 @@ -0,0 +1,8 @@
@@ -11704,7 +11841,7 @@ index 0000000000000000000000000000000000000000..e95644b2c47768836b0e2f5d316cda39
 +}
 diff --git a/target/oppo6762_18540/inc/avbkey.h b/target/oppo6762_18540/inc/avbkey.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2092f6c3a851742fc63aea010815b2e1df02e496
+index 0000000..2092f6c
 --- /dev/null
 +++ b/target/oppo6762_18540/inc/avbkey.h
 @@ -0,0 +1,20 @@
@@ -11730,7 +11867,7 @@ index 0000000000000000000000000000000000000000..2092f6c3a851742fc63aea010815b2e1
 +#endif /*__AVB_KEY__ */
 diff --git a/target/oppo6762_18540/inc/cust_leds.h b/target/oppo6762_18540/inc/cust_leds.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..baac886efe7f955de11bb9def81bd70001b83a85
+index 0000000..baac886
 --- /dev/null
 +++ b/target/oppo6762_18540/inc/cust_leds.h
 @@ -0,0 +1,99 @@
@@ -11835,7 +11972,7 @@ index 0000000000000000000000000000000000000000..baac886efe7f955de11bb9def81bd700
 +#endif
 diff --git a/target/oppo6762_18540/inc/cust_nand.h b/target/oppo6762_18540/inc/cust_nand.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8563292e2929335616a6ae85c93bba1aab07eb93
+index 0000000..8563292
 --- /dev/null
 +++ b/target/oppo6762_18540/inc/cust_nand.h
 @@ -0,0 +1,12 @@
@@ -11854,7 +11991,7 @@ index 0000000000000000000000000000000000000000..8563292e2929335616a6ae85c93bba1a
 \ No newline at end of file
 diff --git a/target/oppo6762_18540/inc/nand_device_list.h b/target/oppo6762_18540/inc/nand_device_list.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..10e3ee91317a57201392bd49371e49b0813a47f6
+index 0000000..10e3ee9
 --- /dev/null
 +++ b/target/oppo6762_18540/inc/nand_device_list.h
 @@ -0,0 +1,32 @@
@@ -11892,7 +12029,7 @@ index 0000000000000000000000000000000000000000..10e3ee91317a57201392bd49371e49b0
 +#endif
 diff --git a/target/oppo6762_18540/inc/oemkey.h b/target/oppo6762_18540/inc/oemkey.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..baaf0f94c721dd4406f226db556c7b9f7991f289
+index 0000000..baaf0f9
 --- /dev/null
 +++ b/target/oppo6762_18540/inc/oemkey.h
 @@ -0,0 +1,20 @@
@@ -11919,7 +12056,7 @@ index 0000000000000000000000000000000000000000..baaf0f94c721dd4406f226db556c7b9f
 \ No newline at end of file
 diff --git a/target/oppo6762_18540/include/target/board.h b/target/oppo6762_18540/include/target/board.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..623e7c85c310711f0058cb976c97e43da406b52e
+index 0000000..623e7c8
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/board.h
 @@ -0,0 +1,20 @@
@@ -11945,7 +12082,7 @@ index 0000000000000000000000000000000000000000..623e7c85c310711f0058cb976c97e43d
 +#endif
 diff --git a/target/oppo6762_18540/include/target/cust_battery.h b/target/oppo6762_18540/include/target/cust_battery.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..846581946150272959a9fd0b3ff0a597e8446818
+index 0000000..8465819
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/cust_battery.h
 @@ -0,0 +1,103 @@
@@ -12054,7 +12191,7 @@ index 0000000000000000000000000000000000000000..846581946150272959a9fd0b3ff0a597
 +#endif /* _CUST_BAT_H_ */
 diff --git a/target/oppo6762_18540/include/target/cust_display.h b/target/oppo6762_18540/include/target/cust_display.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6900d30ee5c0419c4b70cff283b5039adb605a36
+index 0000000..6900d30
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/cust_display.h
 @@ -0,0 +1,712 @@
@@ -12772,7 +12909,7 @@ index 0000000000000000000000000000000000000000..6900d30ee5c0419c4b70cff283b5039a
 +#endif // __CUST_DISPLAY_H__
 diff --git a/target/oppo6762_18540/include/target/cust_key.h b/target/oppo6762_18540/include/target/cust_key.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f4178198f0cb222f4c16fc1ab5516d2693eeb30
+index 0000000..9f41781
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/cust_key.h
 @@ -0,0 +1,37 @@
@@ -12815,7 +12952,7 @@ index 0000000000000000000000000000000000000000..9f4178198f0cb222f4c16fc1ab5516d2
 +#endif /* __CUST_KEY_H__ */
 diff --git a/target/oppo6762_18540/include/target/cust_rtc.h b/target/oppo6762_18540/include/target/cust_rtc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0056f3d541a3298abc81cce1603d2c12c22dbe54
+index 0000000..0056f3d
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/cust_rtc.h
 @@ -0,0 +1,41 @@
@@ -12862,7 +12999,7 @@ index 0000000000000000000000000000000000000000..0056f3d541a3298abc81cce1603d2c12
 +#endif /* __CUST_RTC_H__ */
 diff --git a/target/oppo6762_18540/include/target/cust_usb.h b/target/oppo6762_18540/include/target/cust_usb.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..794eecee9b729bcc8b35c4bcacc636c738225cff
+index 0000000..794eece
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/cust_usb.h
 @@ -0,0 +1,14 @@
@@ -12882,7 +13019,7 @@ index 0000000000000000000000000000000000000000..794eecee9b729bcc8b35c4bcacc636c7
 +#endif /* __CUST_USB_H__ */
 diff --git a/target/oppo6762_18540/include/target/debugconfig.h b/target/oppo6762_18540/include/target/debugconfig.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0928eea08c6959baf527d3d11d132f0005af1c62
+index 0000000..0928eea
 --- /dev/null
 +++ b/target/oppo6762_18540/include/target/debugconfig.h
 @@ -0,0 +1,28 @@
@@ -12916,7 +13053,7 @@ index 0000000000000000000000000000000000000000..0928eea08c6959baf527d3d11d132f00
 +#endif
 diff --git a/target/oppo6762_18540/init.c b/target/oppo6762_18540/init.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1598bd79c3d9cf956a315173c4f60afde6faf1b9
+index 0000000..1598bd7
 --- /dev/null
 +++ b/target/oppo6762_18540/init.c
 @@ -0,0 +1,96 @@
@@ -13018,7 +13155,7 @@ index 0000000000000000000000000000000000000000..1598bd79c3d9cf956a315173c4f60afd
 +}
 diff --git a/target/oppo6762_18540/oppo_bootargs.c b/target/oppo6762_18540/oppo_bootargs.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..10cb35be0daeab1501e5efd25b24b1ee0397f632
+index 0000000..10cb35b
 --- /dev/null
 +++ b/target/oppo6762_18540/oppo_bootargs.c
 @@ -0,0 +1,57 @@
@@ -13081,7 +13218,7 @@ index 0000000000000000000000000000000000000000..10cb35be0daeab1501e5efd25b24b1ee
 +}
 diff --git a/target/oppo6762_18540/power_off.c b/target/oppo6762_18540/power_off.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e74e3c072e60bc124b783f421de77a66cb40c8ef
+index 0000000..e74e3c0
 --- /dev/null
 +++ b/target/oppo6762_18540/power_off.c
 @@ -0,0 +1,29 @@
@@ -13116,7 +13253,7 @@ index 0000000000000000000000000000000000000000..e74e3c072e60bc124b783f421de77a66
 +#endif
 diff --git a/target/oppo6762_18540/rules.mk b/target/oppo6762_18540/rules.mk
 new file mode 100644
-index 0000000000000000000000000000000000000000..96df8ad884ba93dbd09d34b090ef1107850b2eb5
+index 0000000..96df8ad
 --- /dev/null
 +++ b/target/oppo6762_18540/rules.mk
 @@ -0,0 +1,94 @@
@@ -13216,7 +13353,7 @@ index 0000000000000000000000000000000000000000..96df8ad884ba93dbd09d34b090ef1107
 +        $(LOCAL_DIR)/oppo_bootargs.o
 diff --git a/target/oppo6762_18540/tools/makefile b/target/oppo6762_18540/tools/makefile
 new file mode 100644
-index 0000000000000000000000000000000000000000..255c3e23e8b6d18b54c547f8a4d29be0ba72cdb1
+index 0000000..255c3e2
 --- /dev/null
 +++ b/target/oppo6762_18540/tools/makefile
 @@ -0,0 +1,42 @@
@@ -13264,7 +13401,7 @@ index 0000000000000000000000000000000000000000..255c3e23e8b6d18b54c547f8a4d29be0
 +	$(COMPILER) -DMEMBASE=$(MEMBASE) $< -o $@
 diff --git a/target/oppo6762_18540/tools/mkheader.c b/target/oppo6762_18540/tools/mkheader.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c29f9caf7fddbc69f66675d1ce757a529746be0
+index 0000000..8c29f9c
 --- /dev/null
 +++ b/target/oppo6762_18540/tools/mkheader.c
 @@ -0,0 +1,344 @@

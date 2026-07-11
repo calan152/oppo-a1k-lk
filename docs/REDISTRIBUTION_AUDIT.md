@@ -18,7 +18,7 @@ their own authorized development keys.
 
 | Category | Finding | Public-release treatment |
 | --- | --- | --- |
-| LK base | Root tree contains the LK MIT license plus many per-file notices. | Keep the root license; do not describe the whole tree as MIT. |
+| LK base | The LK base uses MIT while imported files carry additional notices. | Keep MIT at `LICENSES/MIT.txt`; use root `LICENSE.md` only as a mixed-license overview. |
 | Kernel-derived LCM | The ILI9881C driver has an OPPO copyright header and was taken from the OPPO A1K GPL kernel-source lineage. | Retain headers, provide provenance, and publish the corresponding source. |
 | Stock DTB | `main_dtb_header.bin` is a binary DTB/header derived from stock firmware. | Removed from Git tracking; each developer obtains it locally from firmware they may use. |
 | Signing material | `certs/IMG_AUTH_KEY.ini` contains `CUSTOM_RSA_D`; `VERIFIED_BOOT_IMG_AUTH_KEY.ini` contains `AUTH_PARAM_D`. | Removed from Git tracking and ignored. They are treated as private key material. |

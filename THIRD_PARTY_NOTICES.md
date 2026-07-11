@@ -6,10 +6,11 @@ notice and license terms.
 
 ## Little Kernel Base
 
-The root [LICENSE](LICENSE) is the MIT license supplied with the Little Kernel
-base. It applies only to material whose copyright holder placed it under those
-terms; it does not override notices in MediaTek, OPPO, Linux, GNU, or other
-third-party files.
+The MIT text supplied with the Little Kernel base is preserved at
+[`LICENSES/MIT.txt`](LICENSES/MIT.txt). It applies only to material whose
+copyright holder placed it under those terms; it does not override notices in
+MediaTek, OPPO, Linux, GNU, or other third-party files. The root
+[`LICENSE.md`](LICENSE.md) is a licensing overview, not a blanket grant.
 
 ## OPPO A1K Kernel-Derived Panel Driver
 

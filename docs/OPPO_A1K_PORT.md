@@ -212,10 +212,23 @@ With a host fastboot implementation that supports fetch:
 
 ```bash
 fastboot fetch expdb expdb.bin
+fastboot fetch boot boot.img
+fastboot fetch recovery recovery.img
+fastboot fetch dtbo dtbo.img
+fastboot fetch system system.img
+fastboot fetch vendor vendor.img
 ```
 
-Reads are bounded by the partition size and the published
-`max-fetch-size`. Keep these facilities read-only.
+Reads are restricted to the published allowlist, bounded by the partition
+size, and use 64-bit offsets for partitions larger than 4 GiB. The target
+publishes `max-fetch-size=0x3c80`: this keeps both regular transfers and the
+known GPT partition tails away from a MediaTek QMU 512-byte status-boundary
+failure. Keep these facilities read-only.
+
+Downloaded images passed to `fastboot boot` default to normal boot. Header
+v1/v2 `recovery_dtbo_size`, an explicit recovery command, or a recovery marker
+in the image command line selects recovery instead. The mere presence of a
+ramdisk is not treated as a recovery marker.
 
 ## What Not To Commit
 

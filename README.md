@@ -14,7 +14,9 @@ libraries**. It is a clean-history patch repository, not a firmware mirror.
 - stock-compatible boot-mode selection and recovery handling;
 - boot image, DTB and DTBO loading fixes;
 - device LCM/display initialization and kernel display handoff;
-- fastboot extensions used during bring-up;
+- RAM boot for downloaded normal and recovery images;
+- read-only fastboot `fetch` support for `expdb`, `boot`, `recovery`, `dtbo`,
+  `system`, and `vendor`;
 - normal-boot command-line and ramdisk handling;
 - watchdog and handoff diagnostics used to isolate boot failures.
 
@@ -41,13 +43,15 @@ extracted from retail firmware.
 
 ## Licensing and provenance
 
-This is a mixed-provenance port. The base LK code keeps its original license
-and copyright notices. The LCM adaptation is derived from the GPL-licensed
-OPPO A1K kernel source published at
+This is a mixed-provenance port and no single blanket license applies to the
+whole repository. The base LK code keeps its original MIT license and
+copyright notices. The LCM adaptation is derived from the GPL-licensed OPPO
+A1K kernel source published at
 [`Frostleaft07/kernel_source_OP486C`](https://github.com/Frostleaft07/kernel_source_OP486C),
 which in turn identifies OPPO source material.
 
-See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+See the root [`LICENSE.md`](LICENSE.md),
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and
 [`docs/REDISTRIBUTION_AUDIT.md`](docs/REDISTRIBUTION_AUDIT.md) before
 redistributing or adding files. The presence of source code here does not
 grant rights to OPPO trademarks, retail firmware, proprietary MediaTek blobs,
