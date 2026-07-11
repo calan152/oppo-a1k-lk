@@ -22,7 +22,8 @@ libraries**. It is a clean-history patch repository, not a firmware mirror.
 
 The investigation history and implementation notes are in
 [`docs/OPPO_A1K_PORT.md`](docs/OPPO_A1K_PORT.md). A Russian overview is in
-[`docs/README_RU.md`](docs/README_RU.md).
+[`docs/README_RU.md`](docs/README_RU.md). Release history is recorded in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Apply the patch
 
