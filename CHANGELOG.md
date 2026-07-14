@@ -2,23 +2,34 @@
 
 Notable changes to the public OPPO A1K LK port are recorded here.
 
-## [v0.2.0] - 2026-07-14
+## [v0.2.0] - 2026-07-15
 
 Second hardware-tested source release focused on fastboot diagnostics, safer
-RAM boot, deterministic physical keys, and an on-device fastboot interface.
+RAM boot and flashing, deterministic physical keys, and an on-device fastboot
+interface.
 
 ### Added
 
 - Full-screen fastboot UI with `START`, `RESTART BOOTLOADER`, `RECOVERY MODE`,
   and `POWER OFF` actions, plus live partition and transfer progress.
+- Colored, pulsing confirmation for `fastboot flashing unlock`; `CANCEL` is the
+  safe default and unlocking requires `VOL+` selection followed by `POWER`.
+- Already-unlocked devices return a successful no-op without a false locked
+  warning, persistent-state rewrite, or userdata wipe. The destructive choice
+  uses amber; red is reserved for actual failures.
 - Build, boot-mode, boot-reason, watchdog, secure-state, panel, DRAM, battery,
   boot-stage, and LK-copy diagnostic `getvar` values.
 - Read-only SHA-256 comparison of the complete `lk` and `lk2` partitions.
+- GPT active-bit, preloader bootarg, running-build-tag, and selection-policy
+  diagnostics without claiming a proven active LK copy.
 - Strict `fastboot boot` validation for header versions, component sizes,
   address ranges, downloaded length, overflow, and reserved-memory overlap.
+- Host-side malformed boot-image tests shared with the LK layout validator.
 - Persistent stage codes from LK entry through kernel handoff, with recovery
   of the previous code after a watchdog reset.
 - Exact RTC UI SOC display from the MT6357 `RTC_AL_MTH` fuel-gauge field.
+- Optional `OPPO_RESCUE_FASTBOOT=yes` build profile with a centrally restricted
+  repair command set.
 
 ### Changed
 
@@ -28,26 +39,43 @@ RAM boot, deterministic physical keys, and an on-device fastboot interface.
 - Fastboot fetch now uses bounded 64-bit ranges and an MTK-QMU-safe chunk size
   for `expdb`, `boot`, `recovery`, `dtbo`, `system`, and `vendor`.
 - Low-battery checks are limited to long `system`/`vendor` flash and fetch
-  operations, preserving access to smaller repair partitions.
+  operations, preserving access to smaller repair partitions; `lk` and `lk2`
+  have a separate minimum of 3700 mV.
 - Fastboot fetch logging is reduced while the on-screen UI retains useful
   operation, partition, percentage, elapsed-time, and transfer-rate data.
+- Critical `lk`, `lk2`, `boot`, `recovery`, and `dtbo` writes report success
+  and 100 percent only after eMMC flush, full read-back, and exact SHA-256
+  comparison. Sparse and aggregate paths cannot bypass this check.
 
 ### Security
 
 - `fastboot flashing lock` is not registered for this target.
 - The legacy MediaTek relock path rejects direct calls.
 - Fastboot verifies the persistent lock state at startup and before commands,
-  restoring the unlocked development state if an unexpected relock is seen.
+  then fails closed if the state is locked or cannot be read.
+- In fail-closed state, boot, reboot, poweroff, flash, erase, and UI exit
+  actions are blocked while diagnostics and explicit `flashing unlock` remain
+  available.
+- The guard never writes or repairs `seccfg` automatically.
 
 ### Commands
 
 - Added diagnostic variables including `lk-build`, `lk-git-revision`,
   `boot-mode`, `boot-reason`, `boot-stage`, `last-boot-stage`, `wdt-status`,
   `lock-state`, `sboot-state`, `panel`, `dram-size`, `expdb-size`,
-  `battery-level`, and the split LK/LK2 SHA-256 values.
+  `battery-level`, split LK/LK2 SHA-256 values, GPT selection policy,
+  preloader bootarg metadata, `running-build-in`, `lk-source-evidence`, and
+  `rescue-fastboot`.
 - Documented `fastboot boot`, `fastboot fetch`, staged `expdb` upload, reboot
-  commands, physical keys, and every new variable in
+  commands, animated unlock confirmation, physical keys, and every new
+  variable in
   [`docs/FASTBOOT.md`](docs/FASTBOOT.md).
+
+### Known limitation
+
+- `active-lk-partition` intentionally remains `unknown`. GPT policy and exact
+  build-tag matches are evidence, not proof that the preloader transferred
+  control from a particular copy; automatic fallback is not advertised.
 
 ### Distribution
 

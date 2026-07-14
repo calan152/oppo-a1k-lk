@@ -237,6 +237,27 @@ v1/v2 `recovery_dtbo_size`, an explicit recovery command, or a recovery marker
 in the image command line selects recovery instead. The mere presence of a
 ramdisk is not treated as a recovery marker.
 
+## LK Copy Selection Evidence
+
+The MT6765 preloader source and the inspected stock OPPO preloader binary both
+select `lk2` only when the GPT active bit for `lk` is zero and the `lk2` bit is
+nonzero. Otherwise they select `lk`. The complete bootarg/ATAG handoff was
+inspected and contains no trustworthy field identifying which copy actually
+transferred control.
+
+LK therefore publishes the GPT bits and predicted policy separately from
+runtime build evidence. `running-build-in` searches both complete partition
+images for the exact `LK_VER_TAG` of the executing build, while
+`lk-source-evidence` reports agreement, conflict, identical copies, or an
+ambiguous match. These values help investigation but do not prove preloader
+fallback. `active-lk-partition` intentionally remains `unknown` until a
+controlled hardware test uses distinguishable copies and independently
+captures the preloader selection log.
+
+Critical flashing, relock behavior, the restricted rescue profile, RAM-boot
+validation, and this evidence model are specified in
+[`FASTBOOT_SAFETY.md`](FASTBOOT_SAFETY.md).
+
 ## What Not To Commit
 
 - `expdb` or other partition dumps;

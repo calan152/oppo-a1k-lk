@@ -1,3 +1,340 @@
+diff --git a/.gitignore b/.gitignore
+index 8185c39..7d6c86e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,35 @@
+ build-*
+ *.img
+ sig
++
++# Local build and editor state
++.cache/
++.clangd
++compile_commands.json
++local.mk
++
++# Bring-up artifacts; keep source and documentation in Git only
++*.bak
++*.bak-*
++*.save
++*.save.*
++analysis/
++binary_patches/
++expdb_analysis/
++expdb_stock_analysis/
++GPIO154
++GPIO165
++GPIO166
++GPIO_LCM
++/oppo6762_18540.mk
++/project/oppo6762_18540_flash.mk
++
++# Device dumps and private firmware packages
++expdb*.bin
++expdb*.img
++*.ofp
++
++# Locally obtained or private build inputs; never publish these from this tree.
++/main_dtb_header.bin
++/certs/IMG_AUTH_KEY.ini
++/certs/VERIFIED_BOOT_IMG_AUTH_KEY.ini
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..f18fb2a
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,50 @@
++# Changelog
++
++## Unreleased
++
++### Bootloader relock protection
++
++- Disable registration of the `fastboot flashing lock` command for the
++  OPPO A1K target.
++- Reject direct calls into the legacy MediaTek relock handler before it can
++  write `locked` state through `sec_set_device_lock(1)`.
++- Verify the persistent device lock state when fastboot starts and before
++  every fastboot command.
++- Enter a fail-closed fastboot session when state is locked or cannot be read:
++  block boot, reboot, poweroff, flash, erase, and Fastboot UI exit actions.
++- Keep read-only diagnostics and the explicit `fastboot flashing unlock` flow
++  available; never repair `seccfg` automatically.
++- Show the lock failure and required unlock command directly in Fastboot UI,
++  then re-query persistent state after a successful unlock.
++- Replace the legacy monochrome unlock prompt with a colored, pulsing Fastboot
++  UI confirmation screen whose safe default is `CANCEL - KEEP LOCKED`.
++- Require `VOL+` selection followed by `POWER` confirmation before the existing
++  userdata wipe and persistent unlock operation can run.
++- Treat `flashing unlock` on an already-unlocked device as a successful no-op,
++  report the actual state, and never show the locked confirmation or wipe data.
++- Use an amber selection/warning accent for the destructive unlock choice;
++  reserve red UI feedback for actual failures.
++
++### Critical flash verification
++
++- Require eMMC flush, full read-back, and exact SHA-256 comparison before
++  reporting success for `lk`, `lk2`, `boot`, `recovery`, and `dtbo`.
++- Require at least 3700 mV for either LK partition and recommend external
++  power to the host.
++- Prevent aggregate and MTK ultra-flash paths from bypassing critical-image
++  verification.
++
++### Rescue and RAM boot safety
++
++- Add the optional `OPPO_RESCUE_FASTBOOT=yes` restricted repair profile and
++  publish its state through `getvar:rescue-fastboot`.
++- Share strict boot-image layout validation between LK and host tests covering
++  malformed, oversized, truncated, overlapping, and unsupported images.
++- Document why `active-lk-partition` remains `unknown`: the inspected
++  preloader selects by GPT active bits but does not pass the loaded source to
++  LK.
++- Publish the separate GPT selection policy, both active bits, raw preloader
++  bootarg metadata, unknown boot-tag count, and the partitions containing the
++  exact running `LK_VER_TAG`.
++- Compare build-tag evidence with GPT policy while keeping
++  `active-lk-partition=unknown` whenever the actual source is not proven.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..7a8ccbe
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,168 @@
++# Little Kernel for OPPO A1K (CPH1923)
++
++This repository contains a working MediaTek Little Kernel port for the
++**OPPO A1K / CPH1923**, OPPO project **18540**, based on the MT6765 LK BSP.
++It was reconstructed by comparing source behavior with the stock bootloader,
++UART output, `expdb` records, final device trees, and register snapshots.
++
++This is a mixed-license research tree. The root `LICENSE` does not grant a
++license to every file in the repository. Read [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
++and [the redistribution audit](docs/REDISTRIBUTION_AUDIT.md) before copying,
++building, or redistributing it.
++
++[Russian documentation](docs/README_RU.md) | [Build dependencies](docs/BUILD_DEPENDENCIES.md) | [Porting notes](docs/OPPO_A1K_PORT.md) | [Fastboot safety](docs/FASTBOOT_SAFETY.md)
++
++## Status
++
++Tested on real CPH1923 hardware:
++
++- LK starts with UART and persistent `expdb` logging.
++- Normal Android boot works.
++- Recovery and fastboot work.
++- The ILI9881C 720x1560 panel, backlight, logo, and display handoff work.
++- Boot modes include Normal, Recovery, Fastboot, META, Factory, Advanced META,
++  and ATE Factory.
++- The serial number is read from the device barcode instead of a fixed fallback.
++- Both `lk` and `lk2` partitions use the same 1 MiB image.
++
++The last hardware-tested image was produced on 2026-07-10:
++
++```text
++build-oppo6762_18540/flash/lk.bin
++size:   1048576 bytes
++sha256: 39dd21f6b769b80e873edbc007276f5fda85811ffcae3b0d5f3ebfb78d5515aa
++```
++
++The binary is intentionally not committed. Build it from source so the exact
++configuration and revision remain visible.
++
++## The Important Fix
++
++The silicon/platform configuration calls this target `MT6762`, but stock
++Android on the CPH1923 expects `/firmware/android/hardware=mt6765`.
++
++Passing `mt6762` made Android select `ueventd.mt6762.rc` instead of the stock
++`ueventd.mt6765.rc` and `init.mt6765.rc`. The result looked like unrelated
++Android failures: `nvcfg`, `data`, and other partitions were not mounted,
++`vendor.hwcomposer-2-1` restarted, and the device eventually rebooted to
++recovery.
++
++This port keeps the MT6762 platform configuration where the BSP needs it but
++overrides only the Android-facing FDT property:
++
++```text
++[FDT_ANDROID] hardware=mt6765
++```
++
++That one boundary is a useful lesson for other MTK ports: the SoC name used by
++LK does not always equal the Android hardware name used to select init files.
++
++## Highlights
++
++- Stock-style early DTB loading from boot/recovery plus `dtbo` overlay.
++- Final FDT repair for the panel pinctrl states expected by the kernel.
++- ILI9881C TXD/BOE/ZAL1890 LCM driver with OPPO round-corner data.
++- Stock-like kernel command-line ordering and mode sanitization.
++- Stock three-call Root-of-Trust handoff for this ATF implementation.
++- Early LK ring buffer replay into the normal LK log store.
++- PL/LK/ATF persistence in a 20 MiB `expdb` partition.
++- Fastboot `fetch`, `dump`, and staged `expdb` retrieval support.
++- Read-back SHA-256 verification for critical fastboot flashes.
++- A fail-closed relock guard and optional restricted rescue-fastboot profile.
++- Strict host-tested validation for RAM-booted Android boot images.
++- Read-only GPT-policy, boot-tag, and per-build evidence for investigating
++  which LK copy preloader selected, without claiming unverified fallback.
++- A 20-second kernel-handoff watchdog for otherwise silent early hangs.
++- Read-only display/DSI/OVL/RDMA handoff diagnostics.
++- Boot-chain-only write protection for this bring-up configuration.
++
++## Build
++
++The checked-in cross-toolchain and `mkimage` helper require an x86-64,
++glibc-based Linux environment (native Linux or WSL2). An unsigned build needs
++GNU Make, `/usr/bin/python2`, and GNU coreutils. GCC 4.9, ARM binutils, MTK
++`mkimage`, and the target security archives are already bundled; the build does
++not download anything.
++
++The public tree deliberately excludes private signing material and the
++stock-derived `main_dtb_header.bin`. Obtain the latter only from firmware you
++are entitled to use and keep it locally at the repository root. The complete
++host-command, bundled-library, optional-tool, and local-input inventory is in
++[Build dependencies](docs/BUILD_DEPENDENCIES.md).
++
++Build an unsigned image with:
++
++```bash
++make -j"$(nproc)" oppo6762_18540 NO_SIGN=yes
++```
++
++`NO_SIGN=no` requires signing material that you own or are authorized to use.
++Do not copy OPPO keys or keys from another device into this repository.
++An unsigned image is usable only when the device's boot chain is configured to
++accept it; this setting is not a bypass for a locked production device.
++
++The flashable output is:
++
++```text
++build-oppo6762_18540/flash/lk.bin
++```
++
++It is padded to exactly 1 MiB for the CPH1923 `lk`/`lk2` partitions.
++
++For a restricted repair build, add `OPPO_RESCUE_FASTBOOT=yes`. Read
++[Fastboot safety](docs/FASTBOOT_SAFETY.md) before using that profile; it has a
++deliberately narrow command and partition allowlist.
++
++## Flashing
++
++Back up both LK partitions first. With the bootloader already unlocked and the
++device in fastboot:
++
++```bash
++fastboot flash lk  build-oppo6762_18540/flash/lk.bin
++fastboot flash lk2 build-oppo6762_18540/flash/lk.bin
++fastboot reboot
++```
++
++Do not flash this image to another model, project ID, DRAM layout, or panel
++variant. Never flash a preloader from this repository as part of LK testing.
++
++## Logs
++
++The port preserves early LK output and appends LK/ATF data to `expdb`. A modern
++fastboot client can retrieve the partition with:
++
++```bash
++fastboot fetch expdb expdb.bin
++```
++
++Useful markers include:
++
++```text
++OPPO_EARLY_LOG_V1
++[FDT_ANDROID] hardware=mt6765
++[OPPO_DISP_HANDOFF]
++[OPPO_LCM_HANDOFF]
++NORMAL_BOOT >>
++Recovery >>
++Fastboot >>
++```
++
++## Safety
++
++Bootloader development can permanently brick a device or destroy user data.
++Keep verified backups, preserve a known recovery path, and change one subsystem
++at a time. Public keys included in target headers are verification material;
++private signing keys, firmware packages, partition dumps, IMEIs, and device
++identifiers must not be committed.
++
++This is an independent research port, not an official OPPO release.
++
++## Licensing And Provenance
++
++The LK core is provided under the license in [LICENSE](LICENSE). Other files
++retain their original copyright and license notices. The panel source was
++adapted from the OPPO A1K GPL kernel-source lineage and is documented in
++[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No OPPO firmware dump, DTB,
++private key, OFP package, or device identifier is part of the intended public
++distribution.
+diff --git a/THIRD_PARTY_NOTICES.md b/THIRD_PARTY_NOTICES.md
+new file mode 100644
+index 0000000..ab1ac68
+--- /dev/null
++++ b/THIRD_PARTY_NOTICES.md
+@@ -0,0 +1,61 @@
++# Third-Party Notices And Provenance
++
++This repository is a research port assembled from multiple codebases. It is
++not offered under one blanket license. Every file keeps its original copyright
++notice and license terms.
++
++## Little Kernel Base
++
++The root [LICENSE](LICENSE) is the MIT license supplied with the Little Kernel
++base. It applies only to material whose copyright holder placed it under those
++terms; it does not override notices in MediaTek, OPPO, Linux, GNU, or other
++third-party files.
++
++## OPPO A1K Kernel-Derived Panel Driver
++
++`dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/`
++
++The ILI9881C panel implementation was adapted for LK from the OPPO A1K kernel
++source lineage. The source reference is:
++
++```text
++https://github.com/Frostleaft07/kernel_source_OP486C
++forked from: oppo-source/A1k-9.0-kernel-source
++path: drivers/misc/mediatek/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/
++```
++
++The upstream file retains its OPPO copyright header. The kernel-source tree
++contains `COPYING` and is distributed as GPLv2 source. Keep the source header,
++keep this notice, document subsequent modifications, and distribute the
++corresponding source when distributing a binary containing this derivative.
++
++## MediaTek And Android-Derived Code
++
++The repository includes components bearing MediaTek and Android copyright
++notices. Their presence does not imply that OPPO or MediaTek granted a new
++license through this repository. Preserve each source-file notice and obtain
++separate permission where a file does not state an open-source license.
++
++## Toolchain And Build Utilities
++
++The `gcc/` directory and several build utilities are third-party toolchain
++artifacts. Their accompanying notices, including `gcc/NOTICE`, must remain
++with any redistribution. This project does not claim ownership of them.
++
++## Intentionally Excluded Inputs
++
++The following are local-only and must not be committed or attached to releases:
++
++- `main_dtb_header.bin` and any DTB extracted from stock firmware;
++- `certs/IMG_AUTH_KEY.ini` and `certs/VERIFIED_BOOT_IMG_AUTH_KEY.ini`;
++- private RSA exponents, signing keys, certificate bundles, and unlock tokens;
++- OPPO firmware packages, partition dumps, `expdb` logs, and device records.
++
++The public build supports `NO_SIGN=yes`; producing a signed image requires
++keys that the builder is entitled to use.
++
++## No Trademark Or Affiliation
++
++OPPO, MediaTek, Android, and Little Kernel are used only to describe
++compatibility and provenance. This is an independent research project and is
++not endorsed by any of those parties.
 diff --git a/app/mt_boot/aee/KEDump.c b/app/mt_boot/aee/KEDump.c
 index 4376403..10e570b 100644
 --- a/app/mt_boot/aee/KEDump.c
@@ -474,10 +811,20 @@ index af247dc..aded3c3 100644
  #endif /* __BOOTARGS_H */
 -
 diff --git a/app/mt_boot/dl_commands.c b/app/mt_boot/dl_commands.c
-index 4387f76..f66c392 100644
+index 4387f76..e5cfaf9 100644
 --- a/app/mt_boot/dl_commands.c
 +++ b/app/mt_boot/dl_commands.c
-@@ -111,6 +111,13 @@ extern unsigned fastboot_state;
+@@ -76,6 +76,9 @@ extern int read_gpt(part_t *part);
+ #endif
+ #include <platform/mt_gpt.h>
+ #include <platform/errno.h>
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++#include <platform/sha256_export.h>
++#endif
+ #ifdef FASTBOOT_WHOLE_FLASH_SUPPORT
+ #include "partition_parser.h"
+ #endif
+@@ -111,6 +114,13 @@ extern unsigned fastboot_state;
  #define INVALID_PTN -1
  //For test: Display info on boot screen
  #define DISPLAY_INFO_ON_LCM
@@ -491,7 +838,7 @@ index 4387f76..f66c392 100644
  #if (defined(MTK_UFS_SUPPORT) || defined(MTK_EMMC_SUPPORT))  //use another macro.
  #define EMMC_TYPE
  #else
-@@ -205,10 +212,14 @@ void* special_heap_alloc(int length)
+@@ -205,10 +215,14 @@ void* special_heap_alloc(int length)
  static void init_display_xy()
  {
  #if defined(DISPLAY_INFO_ON_LCM)
@@ -506,7 +853,7 @@ index 4387f76..f66c392 100644
  }
  
  static void display_info(const char* msg)
-@@ -217,8 +228,12 @@ static void display_info(const char* msg)
+@@ -217,8 +231,12 @@ static void display_info(const char* msg)
  	if (msg == 0) {
  		return;
  	}
@@ -519,7 +866,7 @@ index 4387f76..f66c392 100644
  }
  
  void display_progress(const char* msg_prefix, unsigned size, unsigned totle_size)
-@@ -241,8 +256,12 @@ void display_progress(const char* msg_prefix, unsigned size, unsigned totle_size
+@@ -241,8 +259,12 @@ void display_progress(const char* msg_prefix, unsigned size, unsigned totle_size
  	if (totle_size != 0) {
  		prog = (u64)size*100/totle_size;
  	}
@@ -532,7 +879,7 @@ index 4387f76..f66c392 100644
  }
  
  static void display_speed_info(const char* msg_prefix, unsigned size)
-@@ -258,10 +277,14 @@ static void display_speed_info(const char* msg_prefix, unsigned size)
+@@ -258,10 +280,14 @@ static void display_speed_info(const char* msg_prefix, unsigned size)
  	if (time != 0) {
  		vel = (unsigned)(size / time); //approximate  1024/1000
  		vel /= 1000;
@@ -548,7 +895,7 @@ index 4387f76..f66c392 100644
  }
  
  static void fastboot_fail_wrapper(const char* msg)
-@@ -296,6 +319,19 @@ bool power_check()
+@@ -296,6 +322,164 @@ bool power_check()
  	}
  }
  
@@ -565,10 +912,155 @@ index 4387f76..f66c392 100644
 +		!strcmp(partition, "vendor_b");
 +}
 +
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++#define OPPO_LK_FLASH_MIN_MV 3700
++
++static bool oppo_fastboot_is_lk_partition(const char *partition)
++{
++	return partition != NULL &&
++		(!strcmp(partition, "lk") || !strcmp(partition, "lk2"));
++}
++
++static bool oppo_fastboot_is_critical_partition(const char *partition)
++{
++	return partition != NULL &&
++		(oppo_fastboot_is_lk_partition(partition) ||
++		 !strcmp(partition, "boot") ||
++		 !strcmp(partition, "recovery") ||
++		 !strcmp(partition, "dtbo"));
++}
++
++static bool oppo_fastboot_lk_power_check(const char *partition)
++{
++	int battery_mv;
++	char info[64];
++
++	if (!oppo_fastboot_is_lk_partition(partition))
++		return true;
++
++	battery_mv = get_bat_sense_volt(5);
++	if (battery_mv < OPPO_LK_FLASH_MIN_MV) {
++		snprintf(info, sizeof(info),
++			"Battery %dmV; LK flash requires %dmV",
++			battery_mv, OPPO_LK_FLASH_MIN_MV);
++		fastboot_info(info);
++		set_response_msg("LK flash blocked: battery below 3700mV");
++		return false;
++	}
++
++	if (pmic_chrdet_status() == KAL_FALSE)
++		fastboot_info("External power recommended for LK flash");
++
++	return true;
++}
++
++static int oppo_fastboot_flush_emmc(void)
++{
++#ifdef MTK_EMMC_SUPPORT
++	struct mmc_card *card = mmc_get_card(0);
++	struct mmc_host *host = mmc_get_host(0);
++	int ret;
++
++	if (card == NULL || host == NULL)
++		return -1;
++
++	/* With cache disabled, mmc_block_write() is already synchronous. */
++	if ((card->raw_ext_csd[EXT_CSD_CACHE_CONTROL] & 1U) == 0) {
++		dprintf(CRITICAL,
++			"[FLASH_VERIFY] eMMC cache disabled; write is synchronous\n");
++		return 0;
++	}
++
++	ret = mmc_switch(host, card, EXT_CSD_CMD_SET_NORMAL,
++		EXT_CSD_CACHE_FLUSH, 1, MMC_SWITCH_MODE_WRITE_BYTE);
++	if (ret != MMC_ERR_NONE) {
++		dprintf(CRITICAL,
++			"[FLASH_VERIFY] eMMC cache flush failed: %d\n", ret);
++		return -1;
++	}
++
++	dprintf(CRITICAL, "[FLASH_VERIFY] eMMC cache flush complete\n");
++	return 0;
++#else
++	return -1;
++#endif
++}
++
++static int oppo_fastboot_verify_critical_flash(const char *partition,
++	void *buffer, unsigned int size, const unsigned char expected[32])
++{
++	unsigned char actual[32];
++	ssize_t read_len;
++	int ret;
++
++	if (oppo_fastboot_flush_emmc() != 0) {
++		set_response_msg("FLASH VERIFY FAILED: eMMC flush failed");
++		return -1;
++	}
++
++#ifdef OPPO_FASTBOOT_MENU
++	display_info("Verifying read-back");
++#endif
++	read_len = partition_read(partition, 0, (u8 *)buffer, size);
++	if (read_len != (ssize_t)size) {
++		dprintf(CRITICAL,
++			"[FLASH_VERIFY] %s read-back failed got=%d need=0x%x\n",
++			partition, (int)read_len, size);
++		set_response_msg("FLASH VERIFY FAILED: read-back failed");
++		return -1;
++	}
++
++	ret = sha256((unsigned char *)buffer, size, actual);
++	if (ret != 0) {
++		dprintf(CRITICAL,
++			"[FLASH_VERIFY] %s SHA-256 failed: %d\n",
++			partition, ret);
++		set_response_msg("FLASH VERIFY FAILED: SHA-256 failed");
++		return -1;
++	}
++
++	if (memcmp(expected, actual, sizeof(actual)) != 0) {
++		dprintf(CRITICAL,
++			"[FLASH_VERIFY] %s SHA-256 mismatch\n", partition);
++		set_response_msg("FLASH VERIFY FAILED: SHA-256 mismatch");
++		return -1;
++	}
++
++	dprintf(CRITICAL,
++		"[FLASH_VERIFY] %s read-back SHA-256 verified size=0x%x\n",
++		partition, size);
++	return 0;
++}
++
++static void oppo_fastboot_report_verify_failure(const char *partition)
++{
++	char info[64];
++
++	fastboot_info("FLASH VERIFY FAILED");
++	snprintf(info, sizeof(info), "Partition: %s", partition);
++	fastboot_info(info);
++	fastboot_info("Device must not be rebooted");
++#ifdef OPPO_FASTBOOT_MENU
++	display_info("FLASH VERIFY FAILED - DO NOT REBOOT");
++#endif
++}
++#endif
++
++#ifdef OPPO_RESCUE_FASTBOOT
++static bool oppo_rescue_flash_partition_allowed(const char *partition)
++{
++	return partition != NULL &&
++		(!strcmp(partition, "boot") ||
++		 !strcmp(partition, "recovery") ||
++		 !strcmp(partition, "dtbo") ||
++		 !strcmp(partition, "lk2"));
++}
++#endif
++
  #ifdef MTK_ULTRA_FLASH
  bool g_ultra_flash_enable = true;
  char partition_name_history[MAX_PARTITION_NAME_LEN]={0};
-@@ -334,10 +370,6 @@ bool cmd_download_standard(const char *arg, void *data, unsigned sz)
+@@ -334,10 +518,6 @@ bool cmd_download_standard(const char *arg, void *data, unsigned sz)
  	char response[MAX_RSP_SIZE];
  	unsigned len = hex2unsigned(arg);
  	int r;
@@ -579,14 +1071,65 @@ index 4387f76..f66c392 100644
  	init_display_xy();
  	download_size = 0;
  	if (len > download_max) {
-@@ -936,11 +968,22 @@ struct uni_bootloader_hdr
+@@ -891,6 +1071,12 @@ int _virtual_partition_support(const char *arg, void *data, unsigned int* p_sz)
+ bool cmd_flash_mmc_standard(const char *arg, void *data, unsigned sz);
+ void cmd_flash_mmc(const char *arg, void *data, unsigned sz)
+ {
++#ifdef OPPO_RESCUE_FASTBOOT
++	if (!oppo_rescue_flash_partition_allowed(arg)) {
++		fastboot_fail("rescue fastboot: partition is read-only");
++		return;
++	}
++#endif
+ #ifdef MTK_ULTRA_FLASH
+ 	bool result = false;
+ 	if(g_ultra_flash_enable && (partition_name_history_len!=0) && (!is_special_partition(partition_name_history)))
+@@ -936,11 +1122,73 @@ struct uni_bootloader_hdr
  bool flash_storage(const char* arg, void* data, unsigned sz)
  {
  	bool result = false;
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++	bool verify_critical = oppo_fastboot_is_critical_partition(arg);
++	unsigned char expected_digest[32];
++	int hash_ret;
++#endif
++#ifdef OPPO_RESCUE_FASTBOOT
++	if (!oppo_rescue_flash_partition_allowed(arg)) {
++		fastboot_fail("rescue fastboot: partition is read-only");
++		return false;
++	}
++#endif
 +	if (fastboot_partition_needs_power_check(arg) && !power_check()) {
 +		fastboot_fail("low power: system/vendor flash blocked");
 +		return false;
 +	}
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++	if (!oppo_fastboot_lk_power_check(arg)) {
++		fastboot_fail(error_msg);
++		return false;
++	}
++	if (verify_critical) {
++		sparse_header_t *sparse_header = (sparse_header_t *)data;
++
++		if (data == NULL || sz == 0) {
++			fastboot_fail("critical flash has no image data");
++			return false;
++		}
++		if (sz >= sizeof(*sparse_header) &&
++		    sparse_header->magic == SPARSE_HEADER_MAGIC) {
++			fastboot_fail("sparse critical images are not supported");
++			return false;
++		}
++		hash_ret = sha256((unsigned char *)data, sz, expected_digest);
++		if (hash_ret != 0) {
++			dprintf(CRITICAL,
++				"[FLASH_VERIFY] input SHA-256 failed: %d\n",
++				hash_ret);
++			fastboot_fail("critical image SHA-256 failed");
++			return false;
++		}
++	}
++#endif
 +#ifdef OPPO_FASTBOOT_MENU
 +	oppo_fastboot_ui_set_partition(arg);
 +	display_info("Flashing");
@@ -596,13 +1139,26 @@ index 4387f76..f66c392 100644
          result = cmd_flash_mmc_standard(arg, data, sz);
          if (result)
          {
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++			if (verify_critical &&
++			    oppo_fastboot_verify_critical_flash(arg, data, sz,
++				expected_digest) != 0) {
++				oppo_fastboot_report_verify_failure(arg);
++				fastboot_fail(error_msg);
++				return false;
++			}
++#endif
 +#ifdef OPPO_FASTBOOT_MENU
-+			display_speed_info("Flashing", sz);
++			display_speed_info(
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++				verify_critical ? "Verified" :
++#endif
++				"Flashing", sz);
 +#endif
              fastboot_okay("");
          }
          else
-@@ -965,9 +1008,14 @@ bool flash_storage(const char* arg, void* data, unsigned sz)
+@@ -965,9 +1213,20 @@ bool flash_storage(const char* arg, void* data, unsigned sz)
  
      void* img_data = data + hdr->header_size;
      int idx = 0;
@@ -612,6 +1168,12 @@ index 4387f76..f66c392 100644
 +	for (;idx < hdr->image_cnt; ++idx)
 +	{
 +		dprintf(ALWAYS, "@split download %s.\n", hdr->part_list[idx].name);
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++		if (oppo_fastboot_is_critical_partition(hdr->part_list[idx].name)) {
++			fastboot_fail("critical partitions require a separate flash command");
++			return false;
++		}
++#endif
 +		if (fastboot_partition_needs_power_check(hdr->part_list[idx].name) &&
 +		    !power_check()) {
 +			fastboot_fail("low power: system/vendor flash blocked");
@@ -620,7 +1182,7 @@ index 4387f76..f66c392 100644
  		bool result = cmd_flash_mmc_standard(hdr->part_list[idx].name, img_data,
              hdr->part_list[idx].size);
  
-@@ -1151,6 +1199,10 @@ void cmd_erase_mmc(const char *arg, void *data, unsigned sz)
+@@ -1151,6 +1410,10 @@ void cmd_erase_mmc(const char *arg, void *data, unsigned sz)
  	unsigned int permitted = 0;
  	char msg[64];
  #endif
@@ -631,13 +1193,69 @@ index 4387f76..f66c392 100644
  
  	dprintf (ALWAYS, "cmd_erase_mmc\n");
  
-@@ -1636,9 +1688,9 @@ bool cmd_download_ultra(const char *arg, void *data, unsigned sz)
+@@ -1530,10 +1793,10 @@ exit:
+ 
+ #ifdef MTK_ULTRA_FLASH
+ 
+-#define MAX_SPECIAL_P 17
++#define MAX_SPECIAL_P 19
+ char* special_partition[MAX_SPECIAL_P] = {
+     "preloader", "boot", "boot0", "boot1", "tee", "tee1", "bootloader"
+-    , "tee2", "lk", "logo", "atf", "recovery", "partition", "singlebootloader", "gpt", "pgpt","mbr"
++    , "tee2", "lk", "lk2", "logo", "atf", "recovery", "dtbo", "partition", "singlebootloader", "gpt", "pgpt","mbr"
+ };
+ bool is_special_partition(const char* partition)
+ {
+@@ -1564,6 +1827,7 @@ extern const char * fastboot_get_var(const char *name);
+ void cmd_oem_ultra_flash(const char *arg, void *data, unsigned sz)
+ {
+ 	char response[MAX_RSP_SIZE];
++	char* part;
+ 
+ 	if(!g_ultra_flash_enable)
+ 	{
+@@ -1573,12 +1837,19 @@ void cmd_oem_ultra_flash(const char *arg, void *data, unsigned sz)
+ 		return;
+ 	}
+ 
+-	char* part = trim_space(arg);
++	part = trim_space(arg);
+ 	if(strnlen(part, MAX_PARTITION_NAME_LEN+3) >= MAX_PARTITION_NAME_LEN)
+ 	{
+ 		fastboot_fail("name too long.");
+ 		return;
+ 	}
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++	if (oppo_fastboot_is_critical_partition(part)) {
++		switch_max_download_len(false);
++		fastboot_fail("critical partition requires standard flash");
++		return;
++	}
++#endif
+ 
+ 	memset(partition_name_history, 0, MAX_PARTITION_NAME_LEN);
+ 	partition_name_history_len = strnlen(part, MAX_PARTITION_NAME_LEN-1);
+@@ -1636,9 +1907,23 @@ bool cmd_download_ultra(const char *arg, void *data, unsigned sz)
  	char response[MAX_RSP_SIZE];
  	uint64 len = hex2uint64(arg);
  
 -	if (!power_check())
 -	{
 -		fastboot_fail("low power, need battery charging.");
++#ifdef OPPO_CRITICAL_FLASH_VERIFY
++	if (oppo_fastboot_is_critical_partition(partition_name_history)) {
++		fastboot_fail("critical partition cannot use ultra-flash");
++		return false;
++	}
++#endif
++
++#ifdef OPPO_RESCUE_FASTBOOT
++	if (!oppo_rescue_flash_partition_allowed(partition_name_history)) {
++		fastboot_fail("rescue fastboot: partition is read-only");
++		return false;
++	}
++#endif
++
 +	if (fastboot_partition_needs_power_check(partition_name_history) &&
 +	    !power_check()) {
 +		fastboot_fail("low power: system/vendor flash blocked");
@@ -658,11 +1276,14 @@ index 9fbc06f..d6c89cf 100644
  
  
 diff --git a/app/mt_boot/fastboot.c b/app/mt_boot/fastboot.c
-index 495b7b8..8c9cb13 100644
+index 495b7b8..66a5f0f 100644
 --- a/app/mt_boot/fastboot.c
 +++ b/app/mt_boot/fastboot.c
-@@ -39,6 +39,12 @@
+@@ -37,8 +37,15 @@
+ #include <kernel/timer.h>
+ #include <kernel/event.h>
  #include <dev/udc.h>
++#include <platform.h>
  #include <platform/mt_typedefs.h>
  #include <platform/mtk_wdt.h>
 +#ifdef OPPO_BOOT_STAGE_LOG
@@ -674,7 +1295,7 @@ index 495b7b8..8c9cb13 100644
  #include <version.h>
  #include <verified_boot_common.h>   // for sec_query_warranty()
  #include "sys_commands.h"
-@@ -63,12 +69,30 @@ extern int get_off_mode_charge_status(void);  // FIXME!!! #include <xxx.h>
+@@ -63,12 +70,30 @@ extern int get_off_mode_charge_status(void);  // FIXME!!! #include <xxx.h>
  #include "sec_unlock.h"
  #endif
  #include <platform/boot_mode.h>
@@ -705,7 +1326,7 @@ index 495b7b8..8c9cb13 100644
  
  #define EXPAND(NAME) #NAME
  #define TARGET(NAME) EXPAND(NAME)
-@@ -91,7 +115,36 @@ extern void mtk_wdt_disable(void);
+@@ -91,7 +116,54 @@ extern void mtk_wdt_disable(void);
  extern void mtk_wdt_restart(void);
  extern unsigned get_secure_status(void);
  extern unsigned get_unlocked_status(void);
@@ -714,6 +1335,7 @@ index 495b7b8..8c9cb13 100644
 +extern const char *primary_display_get_lcm_name(void);
 +static u64 oppo_fastboot_dram_size;
 +static const char *oppo_fastboot_panel_name = "unknown";
++static char oppo_lk_selection_policy[24] = "unknown";
 +#endif
 +#ifdef OPPO_FASTBOOT_WDT_GETVAR
 +static unsigned int oppo_fastboot_wdt_status;
@@ -727,13 +1349,30 @@ index 495b7b8..8c9cb13 100644
 +static char oppo_lk2_sha256_0[33] = "unavailable";
 +static char oppo_lk2_sha256_1[33] = "unavailable";
 +static const char *oppo_lk_copies_match = "unavailable";
++static const char *oppo_running_build_in = "unavailable";
++static const char *oppo_lk_source_evidence = "gpt-policy-only";
 +#endif
 +#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
-+extern int sec_set_device_lock(int do_lock);
 +extern int sec_query_device_lock(int *lock_state);
++static bool oppo_fastboot_relock_guard_tripped;
++static int oppo_fastboot_guard_lock_state = -1;
++static char oppo_fastboot_guard_lock_var[32] = "unknown";
++#ifdef OPPO_FASTBOOT_MENU
++void oppo_fastboot_ui_show_status(const char *message);
++static void oppo_fastboot_ui_refresh_lock_state(void);
++static void oppo_fastboot_ui_draw(unsigned int selected);
++#endif
 +#endif
  unsigned fastboot_state = STATE_OFFLINE;
 +#ifdef OPPO_FASTBOOT_MENU
++enum oppo_fastboot_ui_action {
++	OPPO_FASTBOOT_UI_START = 0,
++	OPPO_FASTBOOT_UI_RESTART_BOOTLOADER,
++	OPPO_FASTBOOT_UI_RECOVERY,
++	OPPO_FASTBOOT_UI_POWER_OFF,
++	OPPO_FASTBOOT_UI_ACTION_COUNT,
++};
++
 +static volatile bool oppo_fastboot_command_active;
 +static volatile bool oppo_fastboot_ui_active;
 +static bool oppo_fastboot_ui_started;
@@ -742,7 +1381,7 @@ index 495b7b8..8c9cb13 100644
  
  extern void fastboot_oem_key(const char *arg, void *data, unsigned sz);
  extern void fastboot_oem_query_lock_state(const char *arg, void *data, unsigned sz);
-@@ -101,9 +154,51 @@ struct fastboot_cmd *cmdlist;
+@@ -101,9 +173,129 @@ struct fastboot_cmd *cmdlist;
  
  extern BOOT_ARGUMENT *g_boot_arg;
  
@@ -754,36 +1393,114 @@ index 495b7b8..8c9cb13 100644
 +
 +	ret = sec_query_device_lock(&lock_state);
 +	if (ret != 0) {
++		oppo_fastboot_relock_guard_tripped = true;
++		oppo_fastboot_guard_lock_state = -1;
++		snprintf(oppo_fastboot_guard_lock_var,
++			sizeof(oppo_fastboot_guard_lock_var), "unknown");
++		fastboot_update_var("lock-state", oppo_fastboot_guard_lock_var);
++		fastboot_update_var("unlocked", "no");
 +		dprintf(CRITICAL,
 +			"[RELOCK_GUARD] query failed stage=%s ret=%d\n",
 +			stage, ret);
++		dprintf(CRITICAL,
++			"[RELOCK_GUARD] Relock guard stopped boot; no changes were written\n");
 +		return ret;
 +	}
-+	if (lock_state == 0)
++	if (lock_state == 0) {
++		bool was_tripped = oppo_fastboot_relock_guard_tripped;
++
++		oppo_fastboot_relock_guard_tripped = false;
++		oppo_fastboot_guard_lock_state = 0;
++		snprintf(oppo_fastboot_guard_lock_var,
++			sizeof(oppo_fastboot_guard_lock_var),
++			"0x0 (unlocked)");
++		fastboot_update_var("lock-state", oppo_fastboot_guard_lock_var);
++		fastboot_update_var("unlocked", "yes");
++#ifdef OPPO_FASTBOOT_MENU
++		if (was_tripped) {
++			oppo_fastboot_ui_refresh_lock_state();
++			oppo_fastboot_ui_show_status(
++				"UNLOCKED - relock guard cleared");
++		}
++#endif
 +		return 0;
-+
-+	dprintf(CRITICAL,
-+		"[RELOCK_GUARD] locked state detected stage=%s, restoring unlocked\n",
-+		stage);
-+	ret = sec_set_device_lock(0);
-+	if (ret != 0) {
-+		dprintf(CRITICAL,
-+			"[RELOCK_GUARD] unlock restore failed ret=%d\n", ret);
-+		return ret;
 +	}
 +
-+	lock_state = -1;
-+	ret = sec_query_device_lock(&lock_state);
-+	if (ret != 0 || lock_state != 0) {
-+		dprintf(CRITICAL,
-+			"[RELOCK_GUARD] unlock verify failed ret=%d state=%d\n",
-+			ret, lock_state);
-+		return ret != 0 ? ret : -1;
-+	}
-+
++	oppo_fastboot_relock_guard_tripped = true;
++	oppo_fastboot_guard_lock_state = lock_state;
++	snprintf(oppo_fastboot_guard_lock_var,
++		sizeof(oppo_fastboot_guard_lock_var),
++		"0x%x (locked)", lock_state);
++	fastboot_update_var("lock-state", oppo_fastboot_guard_lock_var);
++	fastboot_update_var("unlocked", "no");
 +	dprintf(CRITICAL,
-+		"[RELOCK_GUARD] unlocked state restored and verified\n");
-+	return 0;
++		"[RELOCK_GUARD] UNEXPECTED LOCK STATE: 0x%02x stage=%s\n",
++		lock_state, stage);
++	dprintf(CRITICAL,
++		"[RELOCK_GUARD] Relock guard stopped boot; no changes were written\n");
++#ifdef OPPO_FASTBOOT_MENU
++	oppo_fastboot_ui_refresh_lock_state();
++	oppo_fastboot_ui_show_status("RUN: fastboot flashing unlock");
++#endif
++	return -1;
++}
++
++static bool oppo_fastboot_guard_command_allowed(const char *command)
++{
++	if (!oppo_fastboot_relock_guard_tripped)
++		return true;
++
++	return !strncmp(command, "getvar:", 7) ||
++		!strncmp(command, "fetch:", 6) ||
++		!strcmp(command, "dump") ||
++		!strncmp(command, "oem lks", 7) ||
++		!strncmp(command, "oem key", 7) ||
++		!strncmp(command, "download:", 9) ||
++		!strncmp(command, "flashing unlock", 15);
++}
++
++static void oppo_fastboot_report_relock_guard(void)
++{
++	char info[64];
++
++	if (oppo_fastboot_guard_lock_state >= 0) {
++		snprintf(info, sizeof(info),
++			"UNEXPECTED LOCK STATE: 0x%02x",
++			oppo_fastboot_guard_lock_state);
++		fastboot_info(info);
++	} else {
++		fastboot_info("UNEXPECTED LOCK STATE: unknown");
++	}
++	fastboot_info("Relock guard stopped boot");
++	fastboot_info("Unlock explicitly; no changes were written");
++#ifdef OPPO_FASTBOOT_MENU
++	oppo_fastboot_ui_show_status("RUN: fastboot flashing unlock");
++#endif
++}
++#endif
++
++#ifdef OPPO_RESCUE_FASTBOOT
++static bool oppo_rescue_fastboot_command_allowed(const char *command)
++{
++	const char *partition;
++
++	if (!strncmp(command, "getvar:", 7) ||
++	    !strncmp(command, "fetch:", 6) ||
++	    !strncmp(command, "download:", 9) ||
++	    !strcmp(command, "boot") ||
++	    !strcmp(command, "reboot") ||
++	    !strcmp(command, "poweroff") ||
++	    !strncmp(command, "flashing unlock", 15))
++		return true;
++
++	if (strncmp(command, "flash:", 6) != 0)
++		return false;
++
++	partition = command + 6;
++	return !strcmp(partition, "boot") ||
++		!strcmp(partition, "recovery") ||
++		!strcmp(partition, "dtbo") ||
++		!strcmp(partition, "lk2");
 +}
 +#endif
 +
@@ -795,7 +1512,7 @@ index 495b7b8..8c9cb13 100644
  char hw_revision[12] = "";
  char erase_blk_size[12] = "";
  char logical_blk_size[12] = "";
-@@ -122,7 +217,19 @@ static void req_complete(struct udc_request *req, unsigned actual, int status)
+@@ -122,7 +314,19 @@ static void req_complete(struct udc_request *req, unsigned actual, int status)
  
  void update_device_info()
  {
@@ -816,7 +1533,7 @@ index 495b7b8..8c9cb13 100644
  	sprintf(hw_revision, "%x", mt_get_chip_hw_ver());
  #ifndef MNTL_SUPPORT
  	sprintf(erase_blk_size, "0x%lx", mt_part_get_erasesz());
-@@ -130,6 +237,225 @@ void update_device_info()
+@@ -130,6 +334,406 @@ void update_device_info()
  #endif
  }
  
@@ -905,9 +1622,116 @@ index 495b7b8..8c9cb13 100644
 +#endif
 +
 +#ifdef OPPO_FASTBOOT_HW_GETVARS
++static bool oppo_fastboot_preloader_tag_known(u32 tag)
++{
++	switch (tag) {
++	case 0x88610001:
++	case 0x88610002:
++	case 0x88610003:
++	case 0x88610004:
++	case 0x88610005:
++	case 0x88610006:
++	case 0x88610007:
++	case 0x88610008:
++	case 0x88610009:
++	case 0x8861000a:
++	case 0x8861000b:
++	case 0x8861000c:
++	case 0x8861000d:
++	case 0x8861000e:
++	case 0x8861000f:
++	case 0x88610010:
++	case 0x88610011:
++	case 0x88610012:
++	case 0x88610013:
++	case 0x88610015:
++	case 0x88610016:
++	case 0x88610018:
++	case 0x88610019:
++	case 0x8861001b:
++	case 0x8861001c:
++	case 0x88610020:
++	case 0x88610021:
++	case 0x88610023:
++	case 0x88610024:
++	case 0x88610025:
++	case 0x88610026:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static void oppo_fastboot_publish_preloader_bootarg_vars(void)
++{
++	static char format[16] = "unavailable";
++	static char address[20] = "unavailable";
++	static char size[20] = "unavailable";
++	static char units[8] = "unknown";
++	static char unknown_tags[32] = "unavailable";
++	unsigned int bootarg_addr = platform_get_bootarg_addr();
++	unsigned int bootarg_size = platform_get_bootarg_size();
++	unsigned int unknown_count = 0;
++	unsigned int first_unknown = 0;
++	unsigned int consumed = 0;
++	bool malformed = false;
++
++	snprintf(address, sizeof(address), "0x%08x", bootarg_addr);
++	snprintf(size, sizeof(size), "0x%x", bootarg_size);
++	if (bootarg_addr == 0 || bootarg_size == 0) {
++		snprintf(format, sizeof(format), "unavailable");
++	} else if (*(u32 *)bootarg_addr == BOOT_ARGUMENT_MAGIC) {
++		snprintf(format, sizeof(format), "legacy");
++		snprintf(units, sizeof(units), "bytes");
++		snprintf(unknown_tags, sizeof(unknown_tags), "n/a");
++	} else {
++		struct boot_tag *tag = (struct boot_tag *)bootarg_addr;
++
++		snprintf(format, sizeof(format), "atag");
++		snprintf(units, sizeof(units), "words");
++		while (consumed < bootarg_size && tag->hdr.size != 0) {
++			unsigned int tag_words = tag->hdr.size;
++
++			if (tag_words < 2 || tag_words > bootarg_size - consumed) {
++				malformed = true;
++				break;
++			}
++			if (!oppo_fastboot_preloader_tag_known(tag->hdr.tag)) {
++				if (unknown_count == 0)
++					first_unknown = tag->hdr.tag;
++				unknown_count++;
++			}
++			consumed += tag_words;
++			tag = (struct boot_tag *)((u32 *)tag + tag_words);
++		}
++
++		if (malformed)
++			snprintf(unknown_tags, sizeof(unknown_tags),
++				"malformed@0x%x", consumed);
++		else if (unknown_count != 0)
++			snprintf(unknown_tags, sizeof(unknown_tags),
++				"%u first=0x%08x", unknown_count, first_unknown);
++		else
++			snprintf(unknown_tags, sizeof(unknown_tags), "0");
++	}
++
++	fastboot_publish("preloader-bootarg-format", format);
++	fastboot_publish("preloader-bootarg-addr", address);
++	fastboot_publish("preloader-bootarg-size", size);
++	fastboot_publish("preloader-bootarg-units", units);
++	fastboot_publish("preloader-unknown-tags", unknown_tags);
++	dprintf(CRITICAL,
++		"[LK_SOURCE] bootarg format=%s addr=%s size=%s %s unknown=%s\n",
++		format, address, size, units, unknown_tags);
++}
++
 +static void oppo_fastboot_publish_hw_vars(void)
 +{
 +	static char dram_size[24];
++	static char lk_active_var[12];
++	static char lk2_active_var[12];
++	int lk_active;
++	int lk2_active;
 +
 +	oppo_fastboot_panel_name = primary_display_get_lcm_name();
 +	if (oppo_fastboot_panel_name == NULL)
@@ -917,7 +1741,31 @@ index 495b7b8..8c9cb13 100644
 +	snprintf(dram_size, sizeof(dram_size), "0x%llx",
 +		oppo_fastboot_dram_size);
 +	fastboot_publish("dram-size", dram_size);
++
++	lk_active = partition_get_active_bit_by_name("lk");
++	lk2_active = partition_get_active_bit_by_name("lk2");
++	if (lk_active < 0 || lk2_active < 0) {
++		snprintf(lk_active_var, sizeof(lk_active_var), "unknown");
++		snprintf(lk2_active_var, sizeof(lk2_active_var), "unknown");
++		snprintf(oppo_lk_selection_policy,
++			sizeof(oppo_lk_selection_policy), "unknown");
++	} else {
++		snprintf(lk_active_var, sizeof(lk_active_var), "%u",
++			lk_active != 0);
++		snprintf(lk2_active_var, sizeof(lk2_active_var), "%u",
++			lk2_active != 0);
++		snprintf(oppo_lk_selection_policy,
++			sizeof(oppo_lk_selection_policy), "%s",
++			lk_active == 0 && lk2_active > 0 ? "lk2" : "lk");
++	}
++	fastboot_publish("lk-active-bit", lk_active_var);
++	fastboot_publish("lk2-active-bit", lk2_active_var);
++	fastboot_publish("lk-selection-policy", oppo_lk_selection_policy);
 +	fastboot_publish("active-lk-partition", "unknown");
++	oppo_fastboot_publish_preloader_bootarg_vars();
++	dprintf(CRITICAL,
++		"[LK_SOURCE] GPT active lk=%s lk2=%s policy=%s actual=unknown\n",
++		lk_active_var, lk2_active_var, oppo_lk_selection_policy);
 +}
 +#endif
 +
@@ -955,12 +1803,32 @@ index 495b7b8..8c9cb13 100644
 +	second[32] = '\0';
 +}
 +
++static bool oppo_fastboot_buffer_contains(const uint8_t *buffer, u64 size,
++	const char *needle)
++{
++	size_t needle_size = strlen(needle);
++	u64 i;
++
++	if (needle_size == 0 || size < needle_size)
++		return false;
++	for (i = 0; i <= size - needle_size; i++) {
++		if (buffer[i] == (uint8_t)needle[0] &&
++		    memcmp(buffer + i, needle, needle_size) == 0)
++			return true;
++	}
++	return false;
++}
++
 +static int oppo_fastboot_hash_lk_partition(const char *part_name,
-+	uint8_t digest[SHA256_HASH_SIZE], u64 *part_size_out)
++	uint8_t digest[SHA256_HASH_SIZE], u64 *part_size_out,
++	bool *contains_running_build)
 +{
 +	u64 part_size;
 +	ssize_t read_len;
 +	uint32_t ret;
++
++	if (contains_running_build)
++		*contains_running_build = false;
 +
 +	part_size = partition_get_size_by_name(part_name);
 +	if (part_size_out)
@@ -982,6 +1850,9 @@ index 495b7b8..8c9cb13 100644
 +			part_name, (int)read_len, part_size);
 +		return -1;
 +	}
++	if (contains_running_build)
++		*contains_running_build = oppo_fastboot_buffer_contains(
++			(uint8_t *)download_base, part_size, LK_VER_TAG);
 +
 +	ret = calc_hash_hw((uint8_t *)download_base, (uint32_t)part_size,
 +		0, digest, SHA256_HASH_SIZE);
@@ -1000,11 +1871,15 @@ index 495b7b8..8c9cb13 100644
 +	uint8_t lk2_digest[SHA256_HASH_SIZE];
 +	u64 lk_size = 0;
 +	u64 lk2_size = 0;
++	bool lk_has_running_build = false;
++	bool lk2_has_running_build = false;
 +	int lk_ok;
 +	int lk2_ok;
 +
-+	lk_ok = oppo_fastboot_hash_lk_partition("lk", lk_digest, &lk_size);
-+	lk2_ok = oppo_fastboot_hash_lk_partition("lk2", lk2_digest, &lk2_size);
++	lk_ok = oppo_fastboot_hash_lk_partition("lk", lk_digest, &lk_size,
++		&lk_has_running_build);
++	lk2_ok = oppo_fastboot_hash_lk_partition("lk2", lk2_digest, &lk2_size,
++		&lk2_has_running_build);
 +
 +	if (lk_size != 0 && lk_size != ~0ULL)
 +		snprintf(oppo_lk_size, sizeof(oppo_lk_size), "0x%llx", lk_size);
@@ -1025,6 +1900,26 @@ index 495b7b8..8c9cb13 100644
 +			"yes" : "no";
 +	}
 +
++	if (lk_has_running_build && lk2_has_running_build) {
++		oppo_running_build_in = "both";
++		oppo_lk_source_evidence =
++			!strcmp(oppo_lk_copies_match, "yes") ?
++			"identical-copies" : "build-tag-in-both";
++	} else if (lk_has_running_build) {
++		oppo_running_build_in = "lk";
++		oppo_lk_source_evidence =
++			!strcmp(oppo_lk_selection_policy, "lk") ?
++			"tag+gpt-consistent" : "tag/gpt-conflict";
++	} else if (lk2_has_running_build) {
++		oppo_running_build_in = "lk2";
++		oppo_lk_source_evidence =
++			!strcmp(oppo_lk_selection_policy, "lk2") ?
++			"tag+gpt-consistent" : "tag/gpt-conflict";
++	} else {
++		oppo_running_build_in = "neither";
++		oppo_lk_source_evidence = "gpt-policy-only";
++	}
++
 +	fastboot_publish("lk-size", oppo_lk_size);
 +	fastboot_publish("lk2-size", oppo_lk2_size);
 +	fastboot_publish("lk-sha256-0", oppo_lk_sha256_0);
@@ -1032,17 +1927,20 @@ index 495b7b8..8c9cb13 100644
 +	fastboot_publish("lk2-sha256-0", oppo_lk2_sha256_0);
 +	fastboot_publish("lk2-sha256-1", oppo_lk2_sha256_1);
 +	fastboot_publish("lk-copies-match", oppo_lk_copies_match);
++	fastboot_publish("running-build-in", oppo_running_build_in);
++	fastboot_publish("lk-source-evidence", oppo_lk_source_evidence);
 +
 +	dprintf(CRITICAL,
-+		"[LK_COPY] lk=0x%llx lk2=0x%llx match=%s (read-only)\n",
-+		lk_size, lk2_size, oppo_lk_copies_match);
++		"[LK_COPY] lk=0x%llx lk2=0x%llx match=%s running=%s evidence=%s (read-only)\n",
++		lk_size, lk2_size, oppo_lk_copies_match,
++		oppo_running_build_in, oppo_lk_source_evidence);
 +}
 +#endif
 +
  void update_radio_version()
  {
  	int len = 0;
-@@ -390,10 +716,281 @@ void fastboot_okay(const char *info)
+@@ -390,10 +994,281 @@ void fastboot_okay(const char *info)
  	fastboot_ack("OKAY", info);
  }
  
@@ -1324,14 +2222,26 @@ index 495b7b8..8c9cb13 100644
  	dprintf(ALWAYS,"fastboot: processing commands\n");
  
  again:
-@@ -402,8 +999,14 @@ again:
+@@ -402,8 +1277,26 @@ again:
  		r = usb_read(buffer, MAX_RSP_SIZE);
  		if (r < 0) break; //no input command
  		buffer[r] = 0;
 -		dprintf(ALWAYS,"[fastboot: command buf]-[%s]-[len=%d]\n", buffer, r);
 -		dprintf(ALWAYS,"[fastboot]-[download_base:0x%x]-[download_size:0x%x]\n",(unsigned int)download_base,(unsigned int)download_size);
++#ifdef OPPO_RESCUE_FASTBOOT
++		if (!oppo_rescue_fastboot_command_allowed((const char *)buffer)) {
++			fastboot_info("RESCUE FASTBOOT: command blocked");
++			fastboot_fail("rescue fastboot: command not allowed");
++			goto again;
++		}
++#endif
 +#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
 +		oppo_fastboot_enforce_unlocked_state("command");
++		if (!oppo_fastboot_guard_command_allowed((const char *)buffer)) {
++			oppo_fastboot_report_relock_guard();
++			fastboot_fail("relock guard: unlock required");
++			goto again;
++		}
 +#endif
 +		quiet_fetch = !strncmp((const char *)buffer, "fetch:", 6);
 +		if (!quiet_fetch) {
@@ -1341,7 +2251,7 @@ index 495b7b8..8c9cb13 100644
  
  		/*Pick up matched command and handle it*/
  		for (cmd = cmdlist; cmd; cmd = cmd->next) {
-@@ -412,7 +1015,11 @@ again:
+@@ -412,7 +1305,11 @@ again:
  				continue;
  			}
  
@@ -1354,29 +2264,29 @@ index 495b7b8..8c9cb13 100644
  #ifdef MTK_SECURITY_SW_SUPPORT
  			extern unsigned int seclib_sec_boot_enabled(unsigned int);
  			//if security boot enable, check cmd allowed
-@@ -422,6 +1029,9 @@ again:
+@@ -422,6 +1319,17 @@ again:
  				{
  					cmd->handle((const char*) buffer + cmd->prefix_len, (void*) download_base, download_size);
  				}
++#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
++			if (!strncmp((const char *)buffer, "flashing unlock", 15)) {
++				oppo_fastboot_enforce_unlocked_state("post-unlock");
++#ifdef OPPO_FASTBOOT_MENU
++				oppo_fastboot_ui_draw(OPPO_FASTBOOT_UI_START);
++#endif
++			}
++#endif
 +#ifdef OPPO_FASTBOOT_MENU
 +			oppo_fastboot_command_active = false;
 +#endif
  				if (fastboot_state == STATE_COMMAND) {
  #ifdef MTK_SECURITY_SW_SUPPORT
  					if ((sec_usbdl_enabled() || seclib_sec_boot_enabled(1)) && !cmd->allowed_when_security_on ) {
-@@ -767,6 +1377,401 @@ static void publish_ab_variables(void)
+@@ -767,6 +1675,575 @@ static void publish_ab_variables(void)
  
  #endif  // MTK_AB_OTA_UPDATER
  
 +#ifdef OPPO_FASTBOOT_MENU
-+enum oppo_fastboot_ui_action {
-+	OPPO_FASTBOOT_UI_START = 0,
-+	OPPO_FASTBOOT_UI_RESTART_BOOTLOADER,
-+	OPPO_FASTBOOT_UI_RECOVERY,
-+	OPPO_FASTBOOT_UI_POWER_OFF,
-+	OPPO_FASTBOOT_UI_ACTION_COUNT,
-+};
-+
 +static const char * const oppo_fastboot_ui_actions[] = {
 +	"START",
 +	"RESTART BOOTLOADER",
@@ -1431,6 +2341,37 @@ index 495b7b8..8c9cb13 100644
 +		OPPO_FASTBOOT_STATUS_Y - 12, 720,
 +		OPPO_FASTBOOT_STATUS_HEIGHT);
 +}
++
++#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
++static void oppo_fastboot_ui_refresh_lock_state(void)
++{
++	char line[64];
++
++	if (!oppo_fastboot_ui_started)
++		return;
++
++	fbcon_clear_image(0x000000, 48, 850, 624, 70);
++	fbcon_clear_image(0x000000, 48, 1175, 624, 55);
++	if (oppo_fastboot_relock_guard_tripped) {
++		video_set_fg_color(255, 48, 48);
++		if (oppo_fastboot_guard_lock_state >= 0)
++			snprintf(line, sizeof(line),
++				"Device state: locked (0x%x)",
++				oppo_fastboot_guard_lock_state);
++		else
++			snprintf(line, sizeof(line),
++				"Device state: lock query failed");
++		oppo_fastboot_ui_text_medium(48, 875, line);
++		oppo_fastboot_ui_text_medium(48, 1195,
++			"LOCKED - run fastboot flashing unlock");
++	} else {
++		video_set_fg_color(0, 255, 48);
++		oppo_fastboot_ui_text_medium(48, 875,
++			"Device state: unlocked");
++	}
++	video_set_default_color();
++}
++#endif
 +
 +void oppo_fastboot_ui_set_partition(const char *partition)
 +{
@@ -1522,10 +2463,135 @@ index 495b7b8..8c9cb13 100644
 +	oppo_fastboot_ui_show_status("ready");
 +}
 +
++static void oppo_fastboot_ui_unlock_pulse(bool bright)
++{
++	unsigned int color = bright ? 0xff9f00 : 0xb84a00;
++
++	fbcon_clear_image(color, 48, 64, 624, 20);
++	fbcon_clear_image(color, 48, 144, 624, 20);
++}
++
++static void oppo_fastboot_ui_draw_unlock(bool unlock_selected, bool bright)
++{
++	unsigned int battery_x;
++
++	video_set_bg_color(0, 0, 0);
++	video_clean_screen();
++	oppo_fastboot_ui_unlock_pulse(bright);
++
++	video_set_fg_color(255, 159, 0);
++	oppo_fastboot_ui_text(48, 98, 2, "BOOTLOADER UNLOCK");
++	battery_x = 672U - strlen(battery_percentage) *
++		OPPO_FASTBOOT_FONT_LARGE_W;
++	oppo_fastboot_ui_text(battery_x, 98, 2, battery_percentage);
++
++	video_set_fg_color(255, 255, 255);
++	oppo_fastboot_ui_text_medium(48, 220,
++		"SECURITY CONFIRMATION");
++
++	video_set_fg_color(255, 183, 64);
++	oppo_fastboot_ui_text(48, 300, 2, "DEVICE IS LOCKED");
++
++	video_set_fg_color(255, 255, 255);
++	oppo_fastboot_ui_text_medium(48, 405,
++		"Unlocking permits custom operating systems.");
++	oppo_fastboot_ui_text_medium(48, 465,
++		"All userdata on this device will be erased.");
++	oppo_fastboot_ui_text_medium(48, 525,
++		"The operation cannot be undone from this screen.");
++
++	video_set_fg_color(255, 192, 64);
++	oppo_fastboot_ui_text_medium(48, 630,
++		"VOL+: select    POWER: confirm");
++
++	fbcon_clear_image(unlock_selected ? 0x202020 : 0x006020,
++		48, 735, 624, 100);
++	fbcon_clear_image(unlock_selected ? 0x8a6500 : 0x202020,
++		48, 875, 624, 100);
++
++	video_set_fg_color(255, 255, 255);
++	oppo_fastboot_ui_text_medium(72, 770,
++		unlock_selected ? "  CANCEL - KEEP LOCKED" :
++		"> CANCEL - KEEP LOCKED");
++	oppo_fastboot_ui_text_medium(72, 910,
++		unlock_selected ? "> UNLOCK BOOTLOADER" :
++		"  UNLOCK BOOTLOADER");
++
++	video_set_fg_color(255, 183, 64);
++	oppo_fastboot_ui_text_medium(48, 1070,
++		"Unlocking performs a factory data reset.");
++	video_set_fg_color(255, 255, 255);
++	oppo_fastboot_ui_text_medium(48, 1190,
++		"Default selection: CANCEL");
++
++	fbcon_clear_image(0x303030, 48, 1238, 624, 3);
++	oppo_fastboot_ui_partition[0] = '\0';
++	oppo_fastboot_ui_show_status("waiting for confirmation");
++	video_set_default_color();
++}
++
++int oppo_fastboot_ui_confirm_unlock(void)
++{
++	bool unlock_selected = false;
++	bool select_ready = false;
++	bool ok_ready = false;
++	bool bright = true;
++	ulong release_begin = get_timer(0);
++	ulong pulse_begin;
++
++	oppo_fastboot_ui_draw_unlock(unlock_selected, bright);
++	while (get_timer(release_begin) < 2000) {
++		if (!mtk_detect_key(MT65XX_MENU_SELECT_KEY) &&
++		    !mtk_detect_key(MT65XX_MENU_OK_KEY))
++			break;
++		thread_sleep(20);
++	}
++	pulse_begin = get_timer(0);
++
++	for (;;) {
++		bool select_pressed =
++			mtk_detect_key(MT65XX_MENU_SELECT_KEY);
++		bool ok_pressed = mtk_detect_key(MT65XX_MENU_OK_KEY);
++
++		if (!select_pressed)
++			select_ready = true;
++		if (!ok_pressed)
++			ok_ready = true;
++
++		if (select_pressed && select_ready) {
++			select_ready = false;
++			unlock_selected = !unlock_selected;
++			oppo_fastboot_ui_draw_unlock(unlock_selected, bright);
++			dprintf(CRITICAL,
++				"[FASTBOOT_UNLOCK_UI] selected=%s\n",
++				unlock_selected ? "unlock" : "cancel");
++		} else if (ok_pressed && ok_ready) {
++			ok_ready = false;
++			if (unlock_selected) {
++				oppo_fastboot_ui_show_status(
++					"unlock confirmed - erasing userdata");
++				dprintf(CRITICAL,
++					"[FASTBOOT_UNLOCK_UI] unlock confirmed\n");
++				return 1;
++			}
++			oppo_fastboot_ui_show_status("unlock cancelled");
++			dprintf(CRITICAL,
++				"[FASTBOOT_UNLOCK_UI] unlock cancelled\n");
++			return 0;
++		}
++
++		if (get_timer(pulse_begin) >= 400) {
++			bright = !bright;
++			oppo_fastboot_ui_unlock_pulse(bright);
++			pulse_begin = get_timer(0);
++		}
++		thread_sleep(20);
++	}
++}
++
 +static void oppo_fastboot_ui_draw(unsigned int selected)
 +{
 +	unsigned int secure = 0;
-+	unsigned int unlocked = 1;
 +	unsigned int battery_x;
 +	char line[64];
 +#ifdef OPPO_FASTBOOT_HW_GETVARS
@@ -1534,7 +2600,6 @@ index 495b7b8..8c9cb13 100644
 +
 +#ifdef MTK_SECURITY_SW_SUPPORT
 +	secure = get_secure_status() ? 1 : 0;
-+	unlocked = get_unlocked_status() ? 1 : 0;
 +#endif
 +
 +	video_set_bg_color(0, 0, 0);
@@ -1574,11 +2639,6 @@ index 495b7b8..8c9cb13 100644
 +	snprintf(line, sizeof(line), "Secure boot: %s", secure ? "yes" : "no");
 +	oppo_fastboot_ui_text_medium(48, 810, line);
 +
-+	video_set_fg_color(unlocked ? 255 : 0, unlocked ? 48 : 255, 48);
-+	snprintf(line, sizeof(line), "Device state: %s",
-+		unlocked ? "unlocked" : "locked");
-+	oppo_fastboot_ui_text_medium(48, 875, line);
-+
 +	video_set_fg_color(255, 255, 255);
 +#ifdef OPPO_LK_BUILD_ID
 +	oppo_fastboot_ui_text_medium(48, 940, "LK build:");
@@ -1607,9 +2667,17 @@ index 495b7b8..8c9cb13 100644
 +		sizeof("Panel:") * OPPO_FASTBOOT_FONT_MEDIUM_W,
 +		1135, line);
 +#endif
++
++#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
++	oppo_fastboot_ui_refresh_lock_state();
++#endif
 +	video_set_default_color();
 +	fbcon_clear_image(0x303030, 48, 1238, 624, 3);
 +	oppo_fastboot_ui_reset_status();
++#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
++	if (oppo_fastboot_relock_guard_tripped)
++		oppo_fastboot_ui_show_status("RUN: fastboot flashing unlock");
++#endif
 +}
 +
 +static void oppo_fastboot_ui_prepare_exit(void)
@@ -1644,6 +2712,30 @@ index 495b7b8..8c9cb13 100644
 +static void oppo_fastboot_ui_run_action(unsigned int selected)
 +{
 +	bool misc_ok = false;
++
++#ifdef OPPO_RESCUE_FASTBOOT
++	if (selected == OPPO_FASTBOOT_UI_START ||
++	    selected == OPPO_FASTBOOT_UI_RECOVERY) {
++		dprintf(CRITICAL,
++			"[RESCUE_FASTBOOT] blocked storage boot action=%s\n",
++			oppo_fastboot_ui_actions[selected]);
++		oppo_fastboot_ui_show_status(
++			"RESCUE MODE - use fastboot boot");
++		return;
++	}
++#endif
++
++#ifdef OPPO_PREVENT_BOOTLOADER_RELOCK
++	oppo_fastboot_enforce_unlocked_state("ui-action");
++	if (oppo_fastboot_relock_guard_tripped) {
++		dprintf(CRITICAL,
++			"[RELOCK_GUARD] blocked fastboot UI action=%s\n",
++			oppo_fastboot_ui_actions[selected]);
++		oppo_fastboot_ui_show_status(
++			"UNLOCK REQUIRED - action blocked");
++		return;
++	}
++#endif
 +
 +	dprintf(CRITICAL, "[FASTBOOT_UI] action=%s\n",
 +		oppo_fastboot_ui_actions[selected]);
@@ -1766,7 +2858,7 @@ index 495b7b8..8c9cb13 100644
  
  /******************************************************************************
  ******************************************************************************/
-@@ -775,9 +1780,15 @@ int fastboot_init(void *base, unsigned size)
+@@ -775,9 +2252,15 @@ int fastboot_init(void *base, unsigned size)
  	thread_t *thr;
  	int ret;
  	static char dl_max_str[11];  // Take NULL and leading 0x into account. SCRATCH_SIZE must be <= 32-bits
@@ -1782,7 +2874,28 @@ index 495b7b8..8c9cb13 100644
  	download_base = base;
  	download_max = SCRATCH_SIZE;
  	snprintf(dl_max_str, sizeof(dl_max_str), "0x%X", download_max);
-@@ -819,9 +1830,36 @@ int fastboot_init(void *base, unsigned size)
+@@ -806,12 +2289,20 @@ int fastboot_init(void *base, unsigned size)
+ 	fastboot_register("oem printk-ratelimit", cmd_printk_ratelimit, TRUE, FALSE);
+ 	fastboot_register("continue", cmd_continue, FALSE, FALSE);
+ 	fastboot_register("reboot", cmd_reboot, TRUE, FALSE);
++	fastboot_register("poweroff", cmd_poweroff, TRUE, FALSE);
+ 	fastboot_register("reboot-bootloader", cmd_reboot_bootloader, TRUE, FALSE);
+ 	fastboot_register("reboot-recovery",cmd_reboot_recovery, TRUE, FALSE);
+ 	fastboot_register("reboot-fastboot",cmd_reboot_fastboot, TRUE, FALSE);
+ 
+ 	fastboot_publish("product", PROJECT);
+ 	fastboot_publish("kernel", "lk");
++#ifdef OPPO_RESCUE_FASTBOOT
++	fastboot_publish("rescue-fastboot", "yes");
++	dprintf(CRITICAL,
++		"[RESCUE_FASTBOOT] restricted command profile enabled\n");
++#else
++	fastboot_publish("rescue-fastboot", "no");
++#endif
+ 	register_secure_unlocked_var();
+ #ifdef MTK_OFF_MODE_CHARGE_SUPPORT
+ 	register_off_mode_charge_var();
+@@ -819,9 +2310,36 @@ int fastboot_init(void *base, unsigned size)
  	fastboot_publish("serialno", sn_buf);
  
  	register_partition_var();
@@ -1819,7 +2932,7 @@ index 495b7b8..8c9cb13 100644
  	fastboot_publish("battery-soc-ok", "yes");
  	fastboot_publish("hw-revision", (const char *) hw_revision);
  	fastboot_publish("erase-block-size", erase_blk_size); //temp. hard code for Zion, 512K bytes
-@@ -830,7 +1868,17 @@ int fastboot_init(void *base, unsigned size)
+@@ -830,7 +2348,17 @@ int fastboot_init(void *base, unsigned size)
  
  	/*LXO: Download related command*/
  	fastboot_register("download:", cmd_download, TRUE, FALSE);
@@ -1837,7 +2950,7 @@ index 495b7b8..8c9cb13 100644
  	/*LXO: END!Download related command*/
  
  	fastboot_oem_register();
-@@ -850,7 +1898,9 @@ int fastboot_init(void *base, unsigned size)
+@@ -850,7 +2378,9 @@ int fastboot_init(void *base, unsigned size)
  	fastboot_register("boot", cmd_boot, TRUE, TRUE);
  	/* command rename */
  	fastboot_register("flashing unlock",fastboot_oem_unlock, TRUE, FALSE);
@@ -1847,11 +2960,25 @@ index 495b7b8..8c9cb13 100644
  	fastboot_register("flashing get_unlock_ability", fastboot_get_unlock_ability, TRUE, FALSE);
  #endif
  	fastboot_register("oem get_socid", fastboot_get_socid, TRUE, FALSE);
-@@ -932,4 +1982,3 @@ fail_alloc_in:
+@@ -932,4 +2462,3 @@ fail_alloc_in:
  	ASSERT(0);
  	return ret;
  }
 -
+diff --git a/app/mt_boot/fastboot.h b/app/mt_boot/fastboot.h
+index 14239f3..416371b 100644
+--- a/app/mt_boot/fastboot.h
++++ b/app/mt_boot/fastboot.h
+@@ -63,4 +63,9 @@ void fastboot_update_var(const char *name, const char *value);
+ const char *fastboot_get_var(const char *name);
+ void fastboot_get_socid(const char *arg, void *data, unsigned sz);
+ 
++#ifdef OPPO_FASTBOOT_MENU
++void oppo_fastboot_ui_show_status(const char *message);
++int oppo_fastboot_ui_confirm_unlock(void);
++#endif
++
+ #endif
 diff --git a/app/mt_boot/fdt_op.c b/app/mt_boot/fdt_op.c
 index 14ed6c0..aa794f4 100644
 --- a/app/mt_boot/fdt_op.c
@@ -3951,8 +5078,197 @@ index 2933084..3b5f0a0 100644
  
  #endif  // _MT_BOOT_H_
 -
+diff --git a/app/mt_boot/oppo_bootimg_validate.c b/app/mt_boot/oppo_bootimg_validate.c
+new file mode 100644
+index 0000000..7869356
+--- /dev/null
++++ b/app/mt_boot/oppo_bootimg_validate.c
+@@ -0,0 +1,144 @@
++#include <string.h>
++
++#include "oppo_bootimg_validate.h"
++
++#define OPPO_BOOTIMG_MIN_PAGE_SIZE 2048U
++#define OPPO_BOOTIMG_MAX_PAGE_SIZE 65536U
++
++static int add_aligned_component(uint64_t *total, uint32_t size,
++	uint32_t page_size, const char **error)
++{
++	uint64_t aligned = (uint64_t)size + page_size - 1U;
++
++	if (aligned < size) {
++		*error = "boot image size arithmetic overflow";
++		return -1;
++	}
++	aligned &= ~((uint64_t)page_size - 1U);
++	if (*total > ~(uint64_t)0 - aligned) {
++		*error = "boot image size arithmetic overflow";
++		return -1;
++	}
++	*total += aligned;
++	return 0;
++}
++
++int oppo_bootimg_validate(const struct bootimg_hdr *header,
++	uint64_t downloaded_size, const struct oppo_bootimg_limits *limits,
++	uint64_t *required_size, const char **error)
++{
++	uint32_t page_size;
++	uint64_t total;
++
++	if (error == NULL || required_size == NULL)
++		return -1;
++	*error = "invalid boot image validation arguments";
++	*required_size = 0;
++
++	if (header == NULL || limits == NULL)
++		return -1;
++	if (downloaded_size < sizeof(*header)) {
++		*error = "incomplete boot image header";
++		return -1;
++	}
++	if (memcmp(header->magic, BOOTIMG_MAGIC, BOOTIMG_MAGIC_SZ) != 0) {
++		*error = "invalid boot image magic";
++		return -1;
++	}
++	if (header->header_version > BOOT_HEADER_VERSION_TWO) {
++		*error = "unsupported boot header version";
++		return -1;
++	}
++
++	page_size = header->page_sz;
++	if (page_size < OPPO_BOOTIMG_MIN_PAGE_SIZE ||
++	    page_size > OPPO_BOOTIMG_MAX_PAGE_SIZE ||
++	    (page_size & (page_size - 1U)) != 0) {
++		*error = "invalid boot image page size";
++		return -1;
++	}
++
++	if (header->kernel_sz == 0) {
++		*error = "boot image has no kernel";
++		return -1;
++	}
++	if (header->kernel_sz > limits->max_kernel_size) {
++		*error = "boot image kernel too large";
++		return -1;
++	}
++	if (header->ramdisk_sz > limits->max_ramdisk_size) {
++		*error = "boot image ramdisk too large";
++		return -1;
++	}
++	if (header->second_sz != 0) {
++		*error = "second-stage boot image unsupported";
++		return -1;
++	}
++	if (header->header_version >= BOOT_HEADER_VERSION_ONE &&
++	    header->recovery_dtbo_size > limits->max_dtb_size) {
++		*error = "recovery dtbo too large";
++		return -1;
++	}
++	if (header->header_version >= BOOT_HEADER_VERSION_TWO &&
++	    header->dtb_size > limits->max_dtb_size) {
++		*error = "boot image dtb too large";
++		return -1;
++	}
++	if (header->header_version >= BOOT_HEADER_VERSION_TWO &&
++	    header->dtb_size == 0) {
++		*error = "boot v2 image has no dtb";
++		return -1;
++	}
++
++	if (header->kernel_addr != limits->kernel_addr) {
++		*error = "unexpected kernel load address";
++		return -1;
++	}
++	if (header->ramdisk_addr != limits->ramdisk_addr) {
++		*error = "unexpected ramdisk load address";
++		return -1;
++	}
++	if (header->tags_addr != limits->dtb_addr) {
++		*error = "unexpected dtb load address";
++		return -1;
++	}
++	if (header->header_version >= BOOT_HEADER_VERSION_TWO &&
++	    header->dtb_addr != limits->dtb_addr) {
++		*error = "unexpected boot v2 dtb address";
++		return -1;
++	}
++
++	total = page_size;
++	if (add_aligned_component(&total, header->kernel_sz, page_size, error) ||
++	    add_aligned_component(&total, header->ramdisk_sz, page_size, error) ||
++	    add_aligned_component(&total, header->second_sz, page_size, error))
++		return -1;
++
++	if (header->header_version >= BOOT_HEADER_VERSION_ONE &&
++	    header->recovery_dtbo_size != 0) {
++		if (header->recovery_dtbo_offset != total) {
++			*error = "invalid recovery dtbo offset";
++			return -1;
++		}
++		if (add_aligned_component(&total, header->recovery_dtbo_size,
++			page_size, error))
++			return -1;
++	}
++
++	if (header->header_version >= BOOT_HEADER_VERSION_TWO &&
++	    add_aligned_component(&total, header->dtb_size, page_size, error))
++		return -1;
++
++	if (total > limits->max_download_size) {
++		*error = "boot image exceeds LK download buffer";
++		return -1;
++	}
++	if (total > downloaded_size) {
++		*error = "incomplete boot image download";
++		return -1;
++	}
++
++	*required_size = total;
++	*error = NULL;
++	return 0;
++}
+diff --git a/app/mt_boot/oppo_bootimg_validate.h b/app/mt_boot/oppo_bootimg_validate.h
+new file mode 100644
+index 0000000..d1d89af
+--- /dev/null
++++ b/app/mt_boot/oppo_bootimg_validate.h
+@@ -0,0 +1,21 @@
++#ifndef OPPO_BOOTIMG_VALIDATE_H
++#define OPPO_BOOTIMG_VALIDATE_H
++
++#include <stddef.h>
++#include <bootimg.h>
++
++struct oppo_bootimg_limits {
++	uint32_t max_kernel_size;
++	uint32_t max_ramdisk_size;
++	uint32_t max_dtb_size;
++	uint64_t max_download_size;
++	uint32_t kernel_addr;
++	uint32_t ramdisk_addr;
++	uint32_t dtb_addr;
++};
++
++int oppo_bootimg_validate(const struct bootimg_hdr *header,
++	uint64_t downloaded_size, const struct oppo_bootimg_limits *limits,
++	uint64_t *required_size, const char **error);
++
++#endif
+diff --git a/app/mt_boot/rules.mk b/app/mt_boot/rules.mk
+index 7b104ba..4ce51a9 100644
+--- a/app/mt_boot/rules.mk
++++ b/app/mt_boot/rules.mk
+@@ -20,6 +20,7 @@ OBJS += \
+ 	$(LOCAL_DIR)/sec_hrid.o \
+ 	$(LOCAL_DIR)/sec_socid.o \
+ 	$(LOCAL_DIR)/sys_commands.o \
++	$(LOCAL_DIR)/oppo_bootimg_validate.o \
+ 	$(LOCAL_DIR)/aee/mrdump_dummy.o \
+ 	$(LOCAL_DIR)/blockheader.o \
+ 	$(LOCAL_DIR)/bootargs.o \
 diff --git a/app/mt_boot/sec_unlock.c b/app/mt_boot/sec_unlock.c
-index b5b8794..7cef3f6 100644
+index b5b8794..084015d 100644
 --- a/app/mt_boot/sec_unlock.c
 +++ b/app/mt_boot/sec_unlock.c
 @@ -211,6 +211,11 @@ _fail:
@@ -3975,7 +5291,55 @@ index b5b8794..7cef3f6 100644
  }
  
  
-@@ -403,6 +409,12 @@ void fastboot_oem_unlock(const char *arg, void *data, unsigned sz)
+@@ -342,7 +348,42 @@ void fastboot_oem_query_lock_state(const char *arg, void *data, unsigned sz)
+ void fastboot_oem_unlock(const char *arg, void *data, unsigned sz)
+ {
+ 	int ret = B_OK;
++	int lock_state = -1;
+ 	char msg[128] = {0};
++
++#ifdef OPPO_FASTBOOT_MENU
++	ret = sec_query_device_lock(&lock_state);
++	if (ret != B_OK) {
++		oppo_fastboot_ui_show_status("UNLOCK STATE UNKNOWN - NO CHANGES");
++		fastboot_fail("cannot read lock state");
++		return;
++	}
++	if (lock_state == 0) {
++		oppo_fastboot_ui_show_status("DEVICE ALREADY UNLOCKED - NO CHANGES");
++		fastboot_info("Device is already unlocked; no changes were made");
++		fastboot_okay("already unlocked");
++		return;
++	}
++
++	if (!oppo_fastboot_ui_confirm_unlock()) {
++		fastboot_info("Bootloader unlock cancelled by user");
++		fastboot_fail("unlock cancelled");
++		return;
++	}
++
++	fastboot_info("Bootloader unlock confirmed");
++	ret = fastboot_oem_unlock_chk();
++	if (ret != B_OK) {
++		snprintf(msg, sizeof(msg), "Unlock failed - Err:0x%x", ret);
++		oppo_fastboot_ui_show_status("UNLOCK FAILED - DEVICE STAYS LOCKED");
++		fastboot_fail(msg);
++		return;
++	}
++
++	oppo_fastboot_ui_show_status("UNLOCK COMPLETE");
++	fastboot_okay("");
++	return;
++#else
+ 	unsigned int unlock_allowed = 0;
+ 
+ 	unlock_warranty();
+@@ -399,10 +440,17 @@ void fastboot_oem_unlock(const char *arg, void *data, unsigned sz)
+ 	}
+ 
+ 	return;
++#endif
+ }
  
  void fastboot_oem_lock(const char *arg, void *data, unsigned sz)
  {
@@ -3988,7 +5352,7 @@ index b5b8794..7cef3f6 100644
  	int ret = B_OK;
  	char msg[128] = {0};
  	int inFactory = 0;
-@@ -452,5 +464,5 @@ void fastboot_oem_lock(const char *arg, void *data, unsigned sz)
+@@ -452,5 +500,5 @@ void fastboot_oem_lock(const char *arg, void *data, unsigned sz)
  	}
  
  	return;
@@ -3996,10 +5360,18 @@ index b5b8794..7cef3f6 100644
  }
 -
 diff --git a/app/mt_boot/sys_commands.c b/app/mt_boot/sys_commands.c
-index 3bc3076..af81fd2 100644
+index 3bc3076..817b1bc 100644
 --- a/app/mt_boot/sys_commands.c
 +++ b/app/mt_boot/sys_commands.c
-@@ -57,6 +57,7 @@
+@@ -48,6 +48,7 @@
+ #include <platform/boot_mode.h>
+ #include <platform/mtk_wdt.h>
+ #include <platform/mt_rtc.h>
++#include <platform/mt_pmic.h>
+ #include <bootimg.h>
+ #ifdef MTK_GPT_SCHEME_SUPPORT
+ #include <platform/partition.h>
+@@ -57,6 +58,7 @@
  #include <platform/mt_gpt.h>
  #include <platform/disp_drv_platform.h>
  #include <platform/mt_disp_drv.h>
@@ -4007,17 +5379,18 @@ index 3bc3076..af81fd2 100644
  #include "fastboot.h"
  #include "sys_commands.h"
  #include <mt_scp_if.h>
-@@ -67,6 +68,9 @@
+@@ -67,6 +69,10 @@
  #include <platform/env.h>
  #endif
  #include <boot_info.h>
 +#ifdef OPPO_FASTBOOT_BOOT_VALIDATION
 +#include "mt_boot.h"
++#include "oppo_bootimg_validate.h"
 +#endif
  
  /*** FIXME!!! #include <disp_drv.h>           // for DISP_IsLcmFound(), DISP_GetVRamSize() ***/
  BOOL DISP_IsLcmFound(void);
-@@ -76,9 +80,10 @@ UINT32 DISP_GetVRamSize(void);
+@@ -76,9 +82,10 @@ UINT32 DISP_GetVRamSize(void);
  extern struct fastboot_var *varlist;
  extern struct fastboot_cmd *cmdlist;
  extern int boot_linux_from_storage(void);
@@ -4030,7 +5403,7 @@ index 3bc3076..af81fd2 100644
  extern unsigned int memory_size();
  extern void custom_port_in_kernel(BOOTMODE boot_mode, char *command);
  #ifdef MTK_OFF_MODE_CHARGE_SUPPORT
-@@ -409,13 +414,29 @@ void cmd_oem_p2u(const char *arg, void *data, unsigned sz)
+@@ -409,13 +416,29 @@ void cmd_oem_p2u(const char *arg, void *data, unsigned sz)
  void cmd_reboot_recovery(const char *arg, void *data, unsigned sz)
  {
  	extern void Set_RTC_Recovery_Mode(bool flag)__attribute__((weak));
@@ -4064,7 +5437,23 @@ index 3bc3076..af81fd2 100644
  }
  
  void cmd_reboot_fastboot(const char *arg, void *data, unsigned sz)
-@@ -608,168 +629,367 @@ extern unsigned int g_kmem_off;
+@@ -591,6 +614,15 @@ void cmd_reboot(const char *arg, void *data, unsigned sz)
+ 	mtk_arch_reset(1); //bypass pwr key when reboot
+ }
+ 
++void cmd_poweroff(const char *arg, void *data, unsigned sz)
++{
++	dprintf(INFO, "powering off the device\n");
++	fastboot_okay("");
++	udc_stop();
++	msleep(300);
++	mt_power_off();
++}
++
+ void cmd_reboot_bootloader(const char *arg, void *data, unsigned sz)
+ {
+ 	dprintf(INFO, "rebooting the device to bootloader\n");
+@@ -608,168 +640,274 @@ extern unsigned int g_kmem_off;
  extern unsigned int g_rmem_off;
  extern unsigned int g_bimg_sz;
  #define ROUND_TO_PAGE(x,y) (((x) + (y)) & (~(y)))
@@ -4088,56 +5477,27 @@ index 3bc3076..af81fd2 100644
  
 -	boot_hdr = (struct bootimg_hdr *)malloc(sizeof(struct bootimg_hdr));
 +#ifdef OPPO_FASTBOOT_BOOT_VALIDATION
-+#define OPPO_BOOTIMG_MIN_PAGE_SIZE  2048U
-+#define OPPO_BOOTIMG_MAX_PAGE_SIZE  65536U
- 
--	if (!boot_hdr) {
--		dprintf(CRITICAL, "cmd_boot,boot_hdr = NULL\n");
--		return;
-+static uint64_t cmd_boot_align_component(uint32_t size, uint32_t page_size)
-+{
-+	return ((uint64_t)size + page_size - 1U) &
-+		~((uint64_t)page_size - 1U);
-+}
-+
 +#ifdef OPPO_FASTBOOT_BOOT_ADDRESS_VALIDATION
 +static bool cmd_boot_ranges_overlap(uint64_t start_a, uint64_t size_a,
 +		uint64_t start_b, uint64_t size_b)
 +{
 +	uint64_t end_a = start_a + size_a;
 +	uint64_t end_b = start_b + size_b;
-+
+ 
+-	if (!boot_hdr) {
+-		dprintf(CRITICAL, "cmd_boot,boot_hdr = NULL\n");
+-		return;
+-	}
 +	return size_a != 0 && size_b != 0 && start_a < end_b && start_b < end_a;
 +}
-+
+ 
+-	memcpy(boot_hdr, data, sizeof(struct bootimg_hdr));
+-	load_bootinfo_bootimg(data);
 +static bool cmd_boot_target_reservation(const char *name)
 +{
 +	return !strcmp(name, "kernel_addr_mb") ||
 +		!strcmp(name, "ramdisk_addr_mb") ||
 +		!strcmp(name, "dtb_kernel_addr_mb");
-+}
-+
-+static bool cmd_boot_range_in_dram(uint64_t start, uint64_t size)
-+{
-+	uint64_t end = start + size;
-+	unsigned int i;
-+
-+	if (!g_boot_arg || end < start)
-+		return false;
-+
-+	for (i = 0; i < g_boot_arg->orig_dram_info.rank_num && i < 4; i++) {
-+		uint64_t rank_start =
-+			g_boot_arg->orig_dram_info.rank_info[i].start;
-+		uint64_t rank_end = rank_start +
-+			g_boot_arg->orig_dram_info.rank_info[i].size;
-+
-+		if (rank_end >= rank_start && start >= rank_start && end <= rank_end)
-+			return true;
- 	}
- 
--	memcpy(boot_hdr, data, sizeof(struct bootimg_hdr));
--	load_bootinfo_bootimg(data);
-+	return false;
 +}
  
 -	dprintf(INFO,
@@ -4154,28 +5514,54 @@ index 3bc3076..af81fd2 100644
 -	dprintf(INFO, "[%s] Android Boot IMG Hdr - Page Size    	: 0x%x\n", MODULE_NAME,
 -		boot_hdr->page_sz);
 -	dprintf(INFO, "============================================================\n");
-+static int cmd_boot_validate_target_range(const char *target_name,
-+		uint64_t start, uint64_t size, const char **error)
++static bool cmd_boot_range_in_dram(uint64_t start, uint64_t size)
 +{
-+	mblock_info_t *mblock_info;
-+	unsigned int reserved_num;
++	uint64_t end = start + size;
 +	unsigned int i;
  
 -	/* ensure commandline is terminated */
 -	boot_hdr->cmdline[BOOTIMG_ARGS_SZ - 1] = 0;
-+	if (!cmd_boot_range_in_dram(start, size)) {
-+		dprintf(CRITICAL,
-+			"[BOOTIMG] %s target outside DRAM: 0x%llx+0x%llx\n",
-+			target_name, start, size);
-+		*error = "boot image target outside DRAM";
-+		return -1;
-+	}
++	if (!g_boot_arg || end < start)
++		return false;
  
 -	if (boot_hdr->page_sz) {
 -		page_sz = boot_hdr->page_sz;
 -		page_mask = page_sz - 1;
 -		//page_mask = 2*1024 ; /*FIXME*/
 -	} else {
++	for (i = 0; i < g_boot_arg->orig_dram_info.rank_num && i < 4; i++) {
++		uint64_t rank_start =
++			g_boot_arg->orig_dram_info.rank_info[i].start;
++		uint64_t rank_end = rank_start +
++			g_boot_arg->orig_dram_info.rank_info[i].size;
++
++		if (rank_end >= rank_start && start >= rank_start && end <= rank_end)
++			return true;
++	}
++
++	return false;
++}
++
++static int cmd_boot_validate_target_range(const char *target_name,
++		uint64_t start, uint64_t size, const char **error)
++{
++	mblock_info_t *mblock_info;
++	unsigned int reserved_num;
++	unsigned int i;
++
++	if (!cmd_boot_range_in_dram(start, size)) {
+ 		dprintf(CRITICAL,
+-			"[FASTBOOT] Please specify the storage page-size in the boot header!\n");
+-		fastboot_fail("Please specify the storage page-size in the boot header!\n");
+-		goto _cmd_boot_exit;
++			"[BOOTIMG] %s target outside DRAM: 0x%llx+0x%llx\n",
++			target_name, start, size);
++		*error = "boot image target outside DRAM";
++		return -1;
+ 	}
+ 
+-	kernel_actual = ROUND_TO_PAGE(boot_hdr->kernel_sz, page_mask);
+-	ramdisk_actual = ROUND_TO_PAGE(boot_hdr->ramdisk_sz, page_mask);
 +	mblock_info = &g_boot_arg->mblock_info;
 +	reserved_num = mblock_info->reserved_num;
 +	if (reserved_num > MBLOCK_RESERVED_NUM_MAX)
@@ -4189,40 +5575,46 @@ index 3bc3076..af81fd2 100644
 +		if (!cmd_boot_ranges_overlap(start, size,
 +			reserved->start, reserved->size))
 +			continue;
-+
+ 
+-	/* sz should have atleast raw boot image */
+-	if (page_sz + kernel_actual + ramdisk_actual > sz) {
+-		fastboot_fail("incomplete bootimage");
+-		goto _cmd_boot_exit;
 +		dprintf(CRITICAL,
 +			"[BOOTIMG] %s target 0x%llx+0x%llx overlaps reserved %s 0x%llx+0x%llx\n",
 +			target_name, start, size, reserved->name,
 +			reserved->start, reserved->size);
 +		*error = "boot image target overlaps reserved memory";
 +		return -1;
-+	}
-+
+ 	}
+ 
+-	if ((boot_hdr->kernel_addr <= ROUND_TO_PAGE((boot_hdr->ramdisk_addr +
+-			boot_hdr->ramdisk_sz), page_mask)) &&
+-	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
+-			   page_mask) >= boot_hdr->ramdisk_addr)) {
+-		fastboot_fail("invalid kernel & ramdisk address: images overlap");
+-		goto _cmd_boot_exit;
 +	if (cmd_boot_ranges_overlap(start, size,
 +		g_boot_arg->lca_reserved_mem.start,
 +		g_boot_arg->lca_reserved_mem.size) ||
 +		cmd_boot_ranges_overlap(start, size,
 +		g_boot_arg->tee_reserved_mem.start,
 +		g_boot_arg->tee_reserved_mem.size)) {
- 		dprintf(CRITICAL,
--			"[FASTBOOT] Please specify the storage page-size in the boot header!\n");
--		fastboot_fail("Please specify the storage page-size in the boot header!\n");
--		goto _cmd_boot_exit;
++		dprintf(CRITICAL,
 +			"[BOOTIMG] %s target overlaps secure reserved memory\n",
 +			target_name);
 +		*error = "boot image target overlaps secure memory";
 +		return -1;
  	}
  
--	kernel_actual = ROUND_TO_PAGE(boot_hdr->kernel_sz, page_mask);
--	ramdisk_actual = ROUND_TO_PAGE(boot_hdr->ramdisk_sz, page_mask);
+-	if ((boot_hdr->kernel_addr < DRAM_PHY_ADDR) ||
+-	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
+-			   page_mask) > (DRAM_PHY_ADDR + (u64)memory_size()))) {
+-		fastboot_fail("invalid kernel address: not lie in memory");
+-		goto _cmd_boot_exit;
 +	return 0;
 +}
- 
--	/* sz should have atleast raw boot image */
--	if (page_sz + kernel_actual + ramdisk_actual > sz) {
--		fastboot_fail("incomplete bootimage");
--		goto _cmd_boot_exit;
++
 +static int cmd_boot_validate_targets(const struct bootimg_hdr *boot_hdr,
 +		const char **error)
 +{
@@ -4230,23 +5622,6 @@ index 3bc3076..af81fd2 100644
 +		*error = "boot memory map unavailable";
 +		return -1;
 +	}
-+	if (boot_hdr->second_sz != 0) {
-+		*error = "second-stage boot image unsupported";
-+		return -1;
-+	}
-+	if (boot_hdr->kernel_addr != LK_KERNEL_64_BASE) {
-+		*error = "unexpected kernel load address";
-+		return -1;
-+	}
-+	if (boot_hdr->ramdisk_addr != LK_RAMDISK_BASE) {
-+		*error = "unexpected ramdisk load address";
-+		return -1;
-+	}
-+	if (boot_hdr->tags_addr != LK_DT_BASE) {
-+		*error = "unexpected dtb load address";
-+		return -1;
-+	}
-+
 +	if (cmd_boot_ranges_overlap(boot_hdr->kernel_addr,
 +		KERNEL_DECOMPRESS_SIZE, boot_hdr->tags_addr, DTB_MAX_SIZE) ||
 +		cmd_boot_ranges_overlap(boot_hdr->kernel_addr,
@@ -4256,8 +5631,13 @@ index 3bc3076..af81fd2 100644
 +		boot_hdr->ramdisk_addr, LK_RAMDISK_MAX_SIZE)) {
 +		*error = "boot image target regions overlap";
 +		return -1;
-+	}
-+
+ 	}
+ 
+-	if ((boot_hdr->kernel_addr <= _heap_end) &&
+-	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
+-			   page_mask) >= MEMBASE)) {
+-		fastboot_fail("invalid kernel address: overlap with lk");
+-		goto _cmd_boot_exit;
 +	if (cmd_boot_validate_target_range("kernel", boot_hdr->kernel_addr,
 +		KERNEL_DECOMPRESS_SIZE, error) ||
 +		cmd_boot_validate_target_range("ramdisk", boot_hdr->ramdisk_addr,
@@ -4270,114 +5650,8 @@ index 3bc3076..af81fd2 100644
 +}
 +#endif
 +
-+static int cmd_boot_validate_layout(const struct bootimg_hdr *boot_hdr,
-+		unsigned downloaded_size, const char **error,
-+		uint64_t *required_size)
-+{
-+	uint32_t page_size = boot_hdr->page_sz;
-+	uint64_t total;
-+	uint64_t recovery_dtbo_offset;
-+
-+	if (boot_hdr->header_version > BOOT_HEADER_VERSION_TWO) {
-+		*error = "unsupported boot header version";
-+		return -1;
- 	}
- 
--	if ((boot_hdr->kernel_addr <= ROUND_TO_PAGE((boot_hdr->ramdisk_addr +
--			boot_hdr->ramdisk_sz), page_mask)) &&
--	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
--			   page_mask) >= boot_hdr->ramdisk_addr)) {
--		fastboot_fail("invalid kernel & ramdisk address: images overlap");
--		goto _cmd_boot_exit;
-+	if (page_size < OPPO_BOOTIMG_MIN_PAGE_SIZE ||
-+		page_size > OPPO_BOOTIMG_MAX_PAGE_SIZE ||
-+		(page_size & (page_size - 1U)) != 0) {
-+		*error = "invalid boot image page size";
-+		return -1;
- 	}
- 
--	if ((boot_hdr->kernel_addr < DRAM_PHY_ADDR) ||
--	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
--			   page_mask) > (DRAM_PHY_ADDR + (u64)memory_size()))) {
--		fastboot_fail("invalid kernel address: not lie in memory");
--		goto _cmd_boot_exit;
-+	if (boot_hdr->kernel_sz == 0) {
-+		*error = "boot image has no kernel";
-+		return -1;
-+	}
-+	if (boot_hdr->kernel_sz > KERNEL_DECOMPRESS_SIZE) {
-+		*error = "boot image kernel too large";
-+		return -1;
-+	}
-+	if (boot_hdr->ramdisk_sz > LK_RAMDISK_MAX_SIZE) {
-+		*error = "boot image ramdisk too large";
-+		return -1;
-+	}
-+	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_ONE &&
-+		boot_hdr->recovery_dtbo_size > DTB_MAX_SIZE) {
-+		*error = "recovery dtbo too large";
-+		return -1;
-+	}
-+	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_TWO &&
-+		boot_hdr->dtb_size > DTB_MAX_SIZE) {
-+		*error = "boot image dtb too large";
-+		return -1;
-+	}
-+	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_TWO &&
-+		boot_hdr->dtb_size == 0) {
-+		*error = "boot v2 image has no dtb";
-+		return -1;
- 	}
- 
--	if ((boot_hdr->kernel_addr <= _heap_end) &&
--	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
--			   page_mask) >= MEMBASE)) {
--		fastboot_fail("invalid kernel address: overlap with lk");
--		goto _cmd_boot_exit;
-+	total = page_size;
-+	total += cmd_boot_align_component(boot_hdr->kernel_sz, page_size);
-+	total += cmd_boot_align_component(boot_hdr->ramdisk_sz, page_size);
-+	total += cmd_boot_align_component(boot_hdr->second_sz, page_size);
-+
-+	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_ONE &&
-+		boot_hdr->recovery_dtbo_size != 0) {
-+		recovery_dtbo_offset = boot_hdr->recovery_dtbo_offset;
-+		if (recovery_dtbo_offset != total) {
-+			*error = "invalid recovery dtbo offset";
-+			return -1;
-+		}
-+		total += cmd_boot_align_component(
-+			boot_hdr->recovery_dtbo_size, page_size);
- 	}
- 
--	if ((boot_hdr->kernel_addr <= ROUND_TO_PAGE((SCRATCH_ADDR + boot_hdr->kernel_sz
--			+ boot_hdr->ramdisk_sz), page_mask)) &&
--	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
--			   page_mask) >= SCRATCH_ADDR)) {
--		fastboot_fail("invalid kernel address: overlap with the download image");
--		goto _cmd_boot_exit;
-+	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_TWO)
-+		total += cmd_boot_align_component(boot_hdr->dtb_size, page_size);
-+
-+	if (total > SCRATCH_SIZE) {
-+		*error = "boot image exceeds LK download buffer";
-+		return -1;
- 	}
-+	if (total > downloaded_size) {
-+		*error = "incomplete boot image download";
-+		return -1;
-+	}
-+
-+	*required_size = total;
-+	return 0;
-+}
 +#endif
- 
--	if ((boot_hdr->ramdisk_addr < DRAM_PHY_ADDR) ||
--	    (ROUND_TO_PAGE((boot_hdr->ramdisk_addr + boot_hdr->ramdisk_sz),
--			   page_mask) > (DRAM_PHY_ADDR + (u64)memory_size()))) {
--		fastboot_fail("invalid ramdisk address: not lie in memory");
--		goto _cmd_boot_exit;
++
 +static BOOTMODE cmd_boot_detect_mode(const char *arg,
 +		const struct bootimg_hdr *boot_hdr, const char **reason)
 +{
@@ -4388,10 +5662,11 @@ index 3bc3076..af81fd2 100644
 +		return RECOVERY_BOOT;
  	}
  
--	if ((boot_hdr->ramdisk_addr <= _heap_end) &&
--	    (ROUND_TO_PAGE((boot_hdr->ramdisk_addr + boot_hdr->ramdisk_sz),
--			   page_mask) >= MEMBASE)) {
--		fastboot_fail("invalid ramdisk address: overlap with lk");
+-	if ((boot_hdr->kernel_addr <= ROUND_TO_PAGE((SCRATCH_ADDR + boot_hdr->kernel_sz
+-			+ boot_hdr->ramdisk_sz), page_mask)) &&
+-	    (ROUND_TO_PAGE((boot_hdr->kernel_addr + boot_hdr->kernel_sz),
+-			   page_mask) >= SCRATCH_ADDR)) {
+-		fastboot_fail("invalid kernel address: overlap with the download image");
 -		goto _cmd_boot_exit;
 +	/* Header v1/v2 recovery images carry the recovery overlay explicitly. */
 +	if (boot_hdr->header_version >= BOOT_HEADER_VERSION_ONE &&
@@ -4401,11 +5676,10 @@ index 3bc3076..af81fd2 100644
 +		return RECOVERY_BOOT;
  	}
  
--	if ((boot_hdr->ramdisk_addr <= ROUND_TO_PAGE((SCRATCH_ADDR + boot_hdr->kernel_sz
--			+ boot_hdr->ramdisk_sz), page_mask)) &&
+-	if ((boot_hdr->ramdisk_addr < DRAM_PHY_ADDR) ||
 -	    (ROUND_TO_PAGE((boot_hdr->ramdisk_addr + boot_hdr->ramdisk_sz),
--			   page_mask) >= SCRATCH_ADDR)) {
--		fastboot_fail("invalid ramdisk address: overlap with the download image");
+-			   page_mask) > (DRAM_PHY_ADDR + (u64)memory_size()))) {
+-		fastboot_fail("invalid ramdisk address: not lie in memory");
 -		goto _cmd_boot_exit;
 +	memset(cmdline, 0, sizeof(cmdline));
 +	memcpy(cmdline, boot_hdr->cmdline, BOOTIMG_ARGS_SZ);
@@ -4418,15 +5692,12 @@ index 3bc3076..af81fd2 100644
 +		*reason = "cmdline";
 +		return RECOVERY_BOOT;
  	}
--	set_bootimg_loaded((uint32_t)ptr);
--	/* do nothing, since boot image has been loaded in scratch address */
--	//memmove((void *)SCRATCH_ADDR, ptr, boot_hdr->kernel_sz);
  
--#ifdef MTK_3LEVEL_PAGETABLE
--	/* rootfs addr */
--	arch_mmu_map((uint64_t)boot_hdr->ramdisk_addr, (uint32_t)boot_hdr->ramdisk_addr,
--		     MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
--		     ROUNDUP(boot_hdr->ramdisk_sz, PAGE_SIZE));
+-	if ((boot_hdr->ramdisk_addr <= _heap_end) &&
+-	    (ROUND_TO_PAGE((boot_hdr->ramdisk_addr + boot_hdr->ramdisk_sz),
+-			   page_mask) >= MEMBASE)) {
+-		fastboot_fail("invalid ramdisk address: overlap with lk");
+-		goto _cmd_boot_exit;
 +	/* A ramdisk is valid in a normal boot image; it is not a recovery marker. */
 +	*reason = "default_normal";
 +	return NORMAL_BOOT;
@@ -4444,17 +5715,43 @@ index 3bc3076..af81fd2 100644
 +	if (!data || sz < sizeof(struct bootimg_hdr)) {
 +		fastboot_fail("no boot image downloaded");
 +		return;
-+	}
-+
+ 	}
+ 
+-	if ((boot_hdr->ramdisk_addr <= ROUND_TO_PAGE((SCRATCH_ADDR + boot_hdr->kernel_sz
+-			+ boot_hdr->ramdisk_sz), page_mask)) &&
+-	    (ROUND_TO_PAGE((boot_hdr->ramdisk_addr + boot_hdr->ramdisk_sz),
+-			   page_mask) >= SCRATCH_ADDR)) {
+-		fastboot_fail("invalid ramdisk address: overlap with the download image");
+-		goto _cmd_boot_exit;
 +	if (FALSE == bootimg_hdr_valid((uint8_t *)data)) {
 +		fastboot_fail("invalid boot image header");
 +		return;
-+	}
-+
+ 	}
+-	set_bootimg_loaded((uint32_t)ptr);
+-	/* do nothing, since boot image has been loaded in scratch address */
+-	//memmove((void *)SCRATCH_ADDR, ptr, boot_hdr->kernel_sz);
+ 
+-#ifdef MTK_3LEVEL_PAGETABLE
+-	/* rootfs addr */
+-	arch_mmu_map((uint64_t)boot_hdr->ramdisk_addr, (uint32_t)boot_hdr->ramdisk_addr,
+-		     MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
+-		     ROUNDUP(boot_hdr->ramdisk_sz, PAGE_SIZE));
 +	boot_hdr = (struct bootimg_hdr *)data;
 +#ifdef OPPO_FASTBOOT_BOOT_VALIDATION
-+	ret = cmd_boot_validate_layout(boot_hdr, sz, &validation_error,
-+		&required_size);
++	{
++		const struct oppo_bootimg_limits limits = {
++			.max_kernel_size = KERNEL_DECOMPRESS_SIZE,
++			.max_ramdisk_size = LK_RAMDISK_MAX_SIZE,
++			.max_dtb_size = DTB_MAX_SIZE,
++			.max_download_size = SCRATCH_SIZE,
++			.kernel_addr = LK_KERNEL_64_BASE,
++			.ramdisk_addr = LK_RAMDISK_BASE,
++			.dtb_addr = LK_DT_BASE,
++		};
++
++		ret = oppo_bootimg_validate(boot_hdr, sz, &limits,
++			&required_size, &validation_error);
++	}
 +	if (ret) {
 +		dprintf(CRITICAL,
 +			"[BOOTIMG] layout validation failed: %s\n",
@@ -4560,6 +5857,18 @@ index 3bc3076..af81fd2 100644
  	return;
  
  }
+diff --git a/app/mt_boot/sys_commands.h b/app/mt_boot/sys_commands.h
+index b76ab94..1b25277 100644
+--- a/app/mt_boot/sys_commands.h
++++ b/app/mt_boot/sys_commands.h
+@@ -36,6 +36,7 @@ void cmd_printk_ratelimit(const char *arg, void *data, unsigned sz);
+ void cmd_getvar(const char *arg, void *data, unsigned sz);
+ void cmd_boot(const char *arg, void *data, unsigned sz);
+ void cmd_reboot(const char *arg, void *data, unsigned sz);
++void cmd_poweroff(const char *arg, void *data, unsigned sz);
+ void cmd_reboot_bootloader(const char *arg, void *data, unsigned sz);
+ void cmd_reboot_recovery(const char *arg, void *data, unsigned sz);
+ void cmd_reboot_fastboot(const char *arg, void *data, unsigned sz);
 diff --git a/arch/arm/crt0.S b/arch/arm/crt0.S
 index c376c4d..b0041ea 100644
 --- a/arch/arm/crt0.S
@@ -4655,6 +5964,23 @@ index f7c9dbb..5c20d17 100644
  	.rodata : {
  		*(.rodata .rodata.* .gnu.linkonce.r.*)
  		. = ALIGN(4);
+diff --git a/certs/README.md b/certs/README.md
+new file mode 100644
+index 0000000..f2bdb36
+--- /dev/null
++++ b/certs/README.md
+@@ -0,0 +1,11 @@
++# Local Signing Inputs
++
++This directory intentionally does not contain private signing material.
++
++`IMG_AUTH_KEY.ini` and `VERIFIED_BOOT_IMG_AUTH_KEY.ini` were removed from Git
++because they contain RSA private-exponent fields. Keep any authorized copies
++only in a local, ignored working directory. Do not upload them to GitHub,
++issues, releases, or build logs.
++
++Use `NO_SIGN=yes` for a public-source build. A signed image requires keys that
++you own or have explicit authorization to use.
 diff --git a/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/Makefile b/dev/lcm/ili9881c_hd_dsi_vdo_txd_boe_zal1890/Makefile
 new file mode 100644
 index 0000000..f133463
@@ -5786,6 +7112,715 @@ index 953171e..0094597 100644
  static inline void cfb_lk_drawstr(int this_xx, int this_yy, unsigned char *this_s)
  {
  	cfb_lk_dchars(this_xx, this_yy, this_s, strlen((char *)this_s));
+diff --git a/docs/BUILD_DEPENDENCIES.md b/docs/BUILD_DEPENDENCIES.md
+new file mode 100644
+index 0000000..1bab206
+--- /dev/null
++++ b/docs/BUILD_DEPENDENCIES.md
+@@ -0,0 +1,134 @@
++# Build Dependencies
++
++This document describes every external, bundled, and device-specific input
++used by the `oppo6762_18540` build. The build does not download dependencies or
++firmware from the network.
++
++## Supported Host
++
++The checked-in toolchain and `scripts/mkimage` executable are Linux x86-64
++binaries linked against glibc. Use one of the following:
++
++- an x86-64 Linux installation;
++- WSL2 with an x86-64 Ubuntu or Debian userspace;
++- an equivalent x86-64 glibc-based container.
++
++Native Windows, macOS, ARM Linux, and musl-only distributions are not supported
++by the bundled binaries without replacing or rebuilding those tools.
++
++## Required Host Commands
++
++An unsigned build (`NO_SIGN=yes`) needs:
++
++| Command | Purpose |
++| --- | --- |
++| `make` | Runs the LK build system. GNU Make is expected. |
++| `/usr/bin/python2` | Executes the checked-in Android GCC 4.9 compiler wrappers. Python 2.7 was used for the tested build. |
++| `sh` | Runs build recipes and image helper scripts. |
++| `cp`, `mv`, `cat`, `mkdir`, `rm`, `truncate` | Creates the MTK image and pads the flashable result to 1 MiB. These normally come from GNU coreutils. |
++
++`git` is required to clone and update the repository, but it is not invoked by
++the compiler itself. `nproc` is used only by the example parallel-build command.
++
++On Debian or Ubuntu, the ordinary host tools can be installed with:
++
++```bash
++sudo apt update
++sudo apt install git make coreutils
++```
++
++Python 2 is no longer packaged by every current distribution. The existing
++compiler wrapper has an absolute `#!/usr/bin/python2` shebang, so provide a
++real Python 2.7 interpreter at that path. Do not silently point arbitrary
++Python 2 programs at Python 3; the wider MediaTek BSP still contains Python 2
++generation scripts even though this target uses pre-generated DT data.
++
++## Bundled Build Components
++
++The repository already contains the target-side build dependencies:
++
++- Android ARM GCC 4.9 and GNU binutils under `gcc/`;
++- the Linux x86-64 MTK image wrapper at `scripts/mkimage`;
++- the MT6765 prebuilt security/platform archives in `platform/mt6765/lib/`:
++  `libcrypto.a`, `libdevinfo.a`, `libsec.a`, and `libsecplat.a`;
++- the Little Kernel, MediaTek platform, AVB, display, LCM, eMMC, USB, SCP, and
++  SSPM sources selected by `project/oppo6762_18540.mk` and
++  `target/oppo6762_18540/rules.mk`.
++
++No Android NDK, external cross-compiler, Git submodule, package manager, or
++network fetch is used by the normal build.
++
++## Required Local Input
++
++The public repository deliberately excludes:
++
++```text
++main_dtb_header.bin
++```
++
++Place an authorized, CPH1923-compatible copy at the repository root before
++building. `make/build.mk` appends this file while constructing `lk.img`; a
++clean checkout without it cannot complete the image target. The hardware-tested
++local input was 97,360 bytes, but the blob is not redistributed by this project.
++Obtain it only from firmware or source material that you are entitled to use.
++
++Do not substitute a DTB from another OPPO model, board revision, panel, or SoC.
++An incompatible DTB can produce a non-booting image even when compilation
++succeeds.
++
++## Optional Dependencies
++
++- `perl` is required only for `NO_SIGN=no`, because that path invokes
++  `scripts/sign/SignTool.pl`.
++- Authorized signing configuration and private keys under `certs/` are required
++  only for `NO_SIGN=no`. They must remain local and must not be committed.
++- `dtc` from `device-tree-compiler` is useful for inspecting or preparing a
++  local DTB, but the normal build consumes the prebuilt `main_dtb_header.bin`
++  and does not compile DTS files.
++- A host C compiler such as GCC is useful when rebuilding host helper tools,
++  but the normal image path uses the checked-in `scripts/mkimage` executable.
++- Android platform-tools (`fastboot` and `adb`) are testing/flashing tools, not
++  compiler dependencies.
++
++## Not Compile-Time Inputs
++
++The following are used by the resulting LK on the device, but are not read from
++the host during compilation:
++
++- the kernel DTB carried by the device's `boot` or `recovery` image;
++- the selected overlay in the device's `dtbo` partition;
++- the `boot`, `recovery`, `system`, `vendor`, and `expdb` partitions;
++- UART, eMMC, panel, PMIC, SCP, SSPM, and ATF firmware state.
++
++In particular, a full OPPO firmware dump, `boot.img`, `dtbo.img`, preloader,
++IMEI, serial-number dump, or OFP package must not be copied into this repository
++to compile LK.
++
++## Preflight Check
++
++Run these checks from the repository root:
++
++```bash
++command -v make
++test -x /usr/bin/python2
++test -x gcc/bin/arm-linux-androideabi-gcc
++test -x gcc/bin/arm-linux-androideabi-ld.bfd
++test -x scripts/mkimage
++test -f main_dtb_header.bin
++```
++
++Then build the public unsigned configuration:
++
++```bash
++make -j"$(nproc)" oppo6762_18540 NO_SIGN=yes
++```
++
++The flashable result is:
++
++```text
++build-oppo6762_18540/flash/lk.bin
++```
++
++It is padded to exactly 1,048,576 bytes for the CPH1923 `lk` and `lk2`
++partitions. `NO_SIGN=yes` does not bypass secure boot; the device boot chain
++must already accept the resulting unsigned image.
+diff --git a/docs/FASTBOOT_SAFETY.md b/docs/FASTBOOT_SAFETY.md
+new file mode 100644
+index 0000000..4e7419c
+--- /dev/null
++++ b/docs/FASTBOOT_SAFETY.md
+@@ -0,0 +1,165 @@
++# Fastboot Safety And Recovery
++
++This target adds fail-closed safeguards around the operations most likely to
++leave the device unbootable. They are target-specific and do not turn an
++experimental bootloader into a general-purpose recovery tool.
++
++## Critical Flash Verification
++
++The `lk`, `lk2`, `boot`, `recovery`, and `dtbo` partitions use this completion
++sequence:
++
++1. Validate the target and downloaded image.
++2. Calculate SHA-256 over the downloaded bytes.
++3. Write the image.
++4. Flush the eMMC cache, when it is enabled.
++5. Read the complete written image back from offset zero.
++6. Calculate SHA-256 over the read-back bytes and compare it exactly.
++7. Report `OKAY` and 100 percent only after the comparison succeeds.
++
++Sparse images are rejected for these critical partitions. The legacy MTK
++ultra-flash path is also disabled for them so it cannot bypass read-back
++verification. Aggregate bootloader images cannot update multiple critical
++partitions in one command.
++
++An `lk` or `lk2` write additionally requires at least 3700 mV. External power
++is recommended and reported to the host, but it is not treated as a substitute
++for the voltage check. Flash each LK copy with a separate command and test one
++known-good copy before replacing the other.
++
++If verification fails, fastboot reports:
++
++```text
++FLASH VERIFY FAILED
++Partition: <name>
++Device must not be rebooted
++```
++
++This path has been compiled and statically checked. A deliberate destructive
++hash-mismatch test has not been performed on hardware.
++
++## Relock Guard
++
++The target does not register `flashing lock` and the legacy relock handler is
++compiled to reject direct calls. It also queries the persistent lock state at
++fastboot entry, before every USB command, and before every Fastboot UI action.
++
++If the query fails or the state is not unlocked, the session becomes
++fail-closed. Boot, reboot, poweroff, flash, erase, and all UI exit actions are
++blocked. Read-only diagnostics remain available, along with the RAM download
++transport and the explicit unlock flow. The screen shows:
++
++```text
++LOCKED - run fastboot flashing unlock
++```
++
++The guard never repairs `seccfg` automatically. The only intended state write
++is the existing, explicit `fastboot flashing unlock` flow, including its normal
++confirmation and data-wipe behavior. After a successful unlock, the guard
++re-queries persistent state before allowing the device to leave fastboot.
++
++On this target, `fastboot flashing unlock` opens the colored Fastboot UI
++confirmation screen instead of the legacy text console. `CANCEL - KEEP LOCKED`
++is selected by default. `VOL+` changes the selection and `POWER` confirms it,
++so an unlock requires two deliberate physical-key actions. The orange header
++pulses while LK waits, but no timeout or automatic selection is used.
++
++The persistent state is queried before that screen is opened. If the device is
++already unlocked, fastboot reports `already unlocked` and returns success
++without showing a false locked warning, rewriting state, or wiping userdata.
++If the state cannot be read, the command fails without making changes. Amber
++is used for the destructive selection; red remains reserved for real errors.
++
++There is deliberately no `fastboot flash unlock` alias: standard fastboot
++parses that form as a request to write a partition named `unlock`.
++
++## Rescue Profile
++
++Build the restricted profile with:
++
++```bash
++make -j"$(nproc)" oppo6762_18540 NO_SIGN=yes OPPO_RESCUE_FASTBOOT=yes
++```
++
++Confirm it with:
++
++```bash
++fastboot getvar rescue-fastboot
++```
++
++The rescue command policy permits:
++
++- `getvar` and bounded `fetch` diagnostics;
++- `download` as the transport required by `boot` and `flash`;
++- RAM-only `boot`;
++- separate flashes of `boot`, `recovery`, `dtbo`, or `lk2`;
++- `reboot` and `poweroff` while the relock guard is clear;
++- explicit `flashing unlock` when the relock guard is active.
++
++All other commands are rejected centrally, including erase, ultra-flash,
++`seccfg`, preloader, NVRAM/NVDATA, protect partitions, and `lk` writes. The
++normal build reports `rescue-fastboot: no`; the restricted build reports
++`rescue-fastboot: yes`.
++
++## Fastboot Boot Validation
++
++The RAM boot path validates Android boot images before copying components:
++
++- supported header version and page size;
++- exact downloaded length and overflow-safe aligned sizes;
++- kernel, ramdisk, recovery-DTBO, and DTB size limits;
++- expected kernel, ramdisk, tags, and DTB addresses;
++- no unsupported second stage;
++- no overlap with LK, framebuffer, ATF, reserved memory, or scratch bounds.
++
++The pure layout validator is shared with host tests:
++
++```bash
++make -C tests/bootimg_validator clean test
++```
++
++The suite covers bad magic, zero page size, oversized and truncated
++components, invalid target addresses, unsupported second stage, and an invalid
++DTB address without requiring a phone.
++
++## Which LK Copy Booted?
++
++The inspected MT6765 preloader source and the stock OPPO preloader binary use
++the same policy. They read GPT active bits for `lk` and `lk2`, load `lk2` only
++when the `lk` bit is zero and the `lk2` bit is nonzero, and load `lk` in every
++other combination. The stock binary contains the matching messages `lk active
++= ...`, `Loading LK2 Partition...`, and `Loading LK Partition...`.
++
++The complete `boot_arg_t`, ATAG union, DRAM handoff buffer, and final
++`bldr_jump(..., bootarg, size)` path were inspected. They contain boot
++reason/mode, memory, logging, security, battery, and related platform data, but
++no loaded-LK partition field or SRAM marker. The stock preloader strings also
++contain no source/slot/copy handoff message.
++
++Fastboot therefore exposes evidence separately:
++
++```text
++getvar:lk-active-bit
++getvar:lk2-active-bit
++getvar:lk-selection-policy
++getvar:running-build-in
++getvar:lk-source-evidence
++getvar:preloader-bootarg-format
++getvar:preloader-bootarg-addr
++getvar:preloader-bootarg-size
++getvar:preloader-bootarg-units
++getvar:preloader-unknown-tags
++```
++
++`lk-selection-policy` predicts what the inspected preloader code would choose.
++`running-build-in` searches both partition images for the exact, per-build
++`LK_VER_TAG` embedded in the currently executing LK. A unique match is useful
++evidence; `both`, `neither`, identical copies, or a GPT conflict remain
++explicitly ambiguous. The boot-tag scan also reports any tag outside the known
++MT6765 set instead of silently treating it as a source marker.
++
++For that reason `getvar:active-lk-partition` intentionally remains `unknown`.
++Do not advertise automatic fallback until a controlled hardware experiment
++boots distinguishable `lk` and `lk2` images and independently records the
++preloader's selection log. Deliberately corrupting either copy is not part of
++the automated test suite.
+diff --git a/docs/OPPO_A1K_PORT.md b/docs/OPPO_A1K_PORT.md
+new file mode 100644
+index 0000000..7be32f2
+--- /dev/null
++++ b/docs/OPPO_A1K_PORT.md
+@@ -0,0 +1,237 @@
++# OPPO A1K LK Porting Notes
++
++This document records the useful engineering conclusions from bringing the
++CPH1923 bootloader up from an MT6765 BSP. It is intentionally about mechanisms,
++not a transcript of every experiment.
++
++## Device Contract
++
++| Item | Value |
++| --- | --- |
++| Product | OPPO A1K / CPH1923 |
++| OPPO project | 18540 |
++| LK platform | MT6765 BSP, MT6762 revised platform name |
++| LK load address | `0x48000000` |
++| LK reserved size | `0x00400000` |
++| Scratch | `0x48b00000`, size `0x09000000` |
++| Display | 720 x 1560, 3-lane DSI video mode |
++| Panel | ILI9881C TXD/BOE ZAL1890 |
++| LK partitions | `lk`, `lk2`, 1 MiB each |
++| Persistent log | `expdb`, 20 MiB on the tested GPT |
++
++## Method
++
++The port was debugged by treating the stock loader as a behavioral reference:
++
++1. Capture UART and `expdb` from stock and source-built LK.
++2. Place compact markers around stage boundaries instead of adding large
++   logging changes everywhere.
++3. Compare memory reservations, final command lines, FDT properties, and
++   display registers immediately before kernel handoff.
++4. Change one subsystem, build, flash both LK slots, and capture the next log.
++5. Keep a known-good recovery path and never modify the preloader during LK
++   bring-up.
++
++This approach was more reliable than copying isolated constants from a binary.
++Many apparent kernel or Android faults were actually mismatched handoff data.
++
++## Boot And Device Tree
++
++The generic built-in `lk_main_dtb` path did not reproduce the stock boot flow.
++This target enables the early loader:
++
++```make
++LK_MAIN_DTB_BUILT_IN := no
++CFG_DTB_EARLY_LOADER_SUPPORT := yes
++```
++
++LK loads the DTB carried by boot/recovery, applies the selected entry from the
++`dtbo` partition, and then performs target-specific final fixups.
++
++The most important final fix is Android's hardware property. The BSP's revised
++platform is MT6762, but stock Android expects MT6765:
++
++```c
++#ifdef OPPO_FORCE_ANDROID_HARDWARE_MT6765
++value = "mt6765";
++#endif
++```
++
++Without it, first-stage Android chooses the wrong init family. Symptoms include
++missing mounts, `Permission denied` under `/data`, HWC restarts, and a native
++reboot into recovery. Always inspect both the command line and
++`/firmware/android` in the final FDT.
++
++The panel handoff also aliases reset/pinctrl states into `/lcm`, because the
++kernel driver expects them there while this board's overlay exposes the source
++states through the display node.
++
++## Kernel Command Line
++
++The final command line is assembled from several sources:
++
++- `/chosen/bootargs` in the selected DTB;
++- boot image header command line;
++- AVB output;
++- dynamic LK values such as boot mode, serial number, timing, and boot reason.
++
++Blindly appending parameters produced duplicates and stale META/Factory state.
++The target therefore filters diagnostic-only tokens, deduplicates mode keys,
++and rebuilds normal-boot parameters in stock order while preserving the chosen
++bootargs layer.
++
++Ramdisk handling follows the stock distinction: recovery/META ramdisk paths
++may use `root=/dev/ram`; normal boot keeps the stock raw-system root selection.
++Do not infer ramdisk policy from one old `expdb` record because the partition
++can contain several boots.
++
++## Logging
++
++Early `_dputc()` happens before storage and the normal LK log store are ready.
++Calling the full storage path there caused stalls. The working design is:
++
++1. Buffer early characters in a small aligned RAM ring.
++2. Initialize storage and the stock LK log store.
++3. Replay the early buffer into the normal ring.
++4. Append PL/LK and ATF data into the tail log area of `expdb`.
++
++The target uses `OPPO_EXPDB_LOG_AREA_SIZE=0x1400000`, matching the 20 MiB
++partition on the tested device. The code still obtains the actual partition
++size and keeps block-aligned headers.
++
++Useful stage markers are deliberately short:
++
++```text
++OPPO_EARLY_LOG_V1
++[OPPO_EARLY] first _dputc
++[FDT_ANDROID] hardware=mt6765
++NORMAL_BOOT >>
++[OPPO_DISP_HANDOFF]
++[OPPO_LCM_HANDOFF]
++```
++
++## Display Handoff
++
++The source-built LK initially left OVL and mutex state different from a stock
++snapshot. Directly clearing OVL/MUTEX looked attractive but caused DSI
++underruns and made the kernel display path less stable. A full quiesce sequence
++also changed RDMA/DSI state away from stock.
++
++The working configuration avoids late orange-state drawing, keeps the
++framebuffer intact, and uses read-only handoff dumps. The dumps cover:
++
++- framebuffer virtual/physical address, size, pages, and first pixels;
++- DSI mode, size, packet/timing, PHY, and interrupt registers;
++- OVL and RDMA source state;
++- MMSYS route and mutex state;
++- selected LCM and all important callbacks;
++- LCM power/reset/backlight callback counters.
++
++The lesson is to compare snapshots at the same stage. `OVL_EN=0` in stock and
++`OVL_EN=1` in a custom log do not prove that stock explicitly disabled OVL;
++they may result from different last-frame activity.
++
++## LCM And Backlight
++
++The panel driver was ported from the corresponding kernel LCM implementation
++and adapted to LK's API. Important board details include:
++
++- 720 x 1560 SYNC_PULSE video mode;
++- three DSI lanes;
++- 334 MHz PLL clock;
++- 65 x 140 mm physical dimensions;
++- OPPO round-corner buffers;
++- MT6370 backlight path and stock-scale brightness values.
++
++Missing `esd_check` callbacks in LK are not automatically fatal. More useful
++evidence comes from reset/power order, DSI state, and what the Linux display
++driver reports after handoff.
++
++## Boot Modes
++
++The recovery key opens the boot menu as it does in stock behavior; it is not a
++direct recovery request. The extended menu writes both `g_boot_mode` and the
++boot argument mode, then applies mode-specific command-line and init markers.
++
++Supported entries:
++
++- Normal boot
++- Recovery
++- Fastboot
++- META
++- Factory
++- Advanced META
++- ATE Factory
++
++Fastboot recovery reboot writes both the RTC marker and the recovery command so
++the request survives the next reset.
++
++## AVB And Root Of Trust
++
++This ATF accepts the stock OPPO three-packet Root-of-Trust sequence. A generic
++six-call AVB20 sequence returned `0xffffffff` after the legacy payload even
++though earlier packets succeeded. The port keeps verification code enabled but
++uses the stock call count and payload order.
++
++Unlocked and locked devices do not have the same root/verity command line.
++Do not copy a locked stock `dm-verity` line into an unlocked bring-up build.
++Likewise, changing verified-boot state can make existing file-based encryption
++state unusable; formatting user data is destructive and must never be an
++automatic debugging step.
++
++## Memory Layout
++
++Memory reservations must be compared as a set rather than one address at a
++time. This target matches the stock high modem placement and reserves a 144 MiB
++scratch window from `0x48b00000` to `0x51b00000`. The final mblock list must
++still leave ATF, TEE, SSPM/SCP, framebuffer, log store, and boot arguments
++non-overlapping.
++
++## Watchdog Strategy
++
++During bring-up, a kernel that hangs before persistent logging can look exactly
++like a dead LK. Immediately before handoff, this target arms a reset-mode WDT
++for 20 seconds. A successful kernel takes over watchdog management; a silent
++early hang resets and leaves a new boot record for analysis.
++
++This is a diagnostic guard, not a substitute for fixing the kernel.
++
++## Fastboot Diagnostics
++
++The target adds upload support for persistent logs and bounded partition reads:
++
++```text
++getvar:expdb-size
++dump
++fetch:<partition>:<offset>:<size>
++oem stage-expdb
++upload
++```
++
++With a host fastboot implementation that supports fetch:
++
++```bash
++fastboot fetch expdb expdb.bin
++```
++
++Reads are bounded by the partition size and the published
++`max-fetch-size`. Keep these facilities read-only.
++
++## What Not To Commit
++
++- `expdb` or other partition dumps;
++- IMEI, serial numbers, MAC addresses, or factory records;
++- OFP packages and proprietary firmware images;
++- private signing keys, including `CUSTOM_RSA_D` and `AUTH_PARAM_D` material;
++- stock-derived `main_dtb_header.bin` or other extracted DTB blobs;
++- locally built LK binaries and experimental binary patches;
++- recovery-side diagnostics containing user data.
++
++## Known Boundaries
++
++- The port is tested on one CPH1923 hardware family and one panel path.
++- META/Factory availability still depends on matching Android vendor content.
++- A different GPT, DRAM size, panel, or PMIC requires a new hardware audit.
++- The included source is research-grade and retains verbose compile-time
++  diagnostics that can be disabled after a stable production configuration is
++  established.
+diff --git a/docs/README_RU.md b/docs/README_RU.md
+new file mode 100644
+index 0000000..ecb60ba
+--- /dev/null
++++ b/docs/README_RU.md
+@@ -0,0 +1,99 @@
++# LK для OPPO A1K (CPH1923)
++
++Это рабочий порт MediaTek Little Kernel для **OPPO A1K / CPH1923**, проект
++OPPO **18540**. Он получен не простой заменой конфигурации: поведение исходников
++сверялось со стоковым `lk.bin`, UART, содержимым `expdb`, итоговым FDT и
++регистрами дисплейного тракта.
++
++Это смешанный по лицензиям исследовательский репозиторий. Корневой `LICENSE`
++не распространяется автоматически на каждый файл. Перед форком, сборкой или
++публикацией прочитайте [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) и
++[аудит распространения](REDISTRIBUTION_AUDIT.md).
++
++## Что работает
++
++- normal boot Android;
++- recovery и fastboot;
++- расширенное меню Normal/Recovery/Fastboot/META/Factory/Advanced META/ATE;
++- панель `ili9881c_hd_dsi_vdo_txd_boe_zal1890`, подсветка и логотип;
++- сохранение раннего LK, PL и ATF лога в 20-МиБ `expdb`;
++- настоящий serial number из barcode;
++- ранняя загрузка DTB из boot/recovery и наложение `dtbo`;
++- получение `expdb` через fastboot `fetch`/`dump`;
++- watchdog перед передачей управления ядру для диагностики зависаний.
++
++## Главная найденная причина
++
++Внутри BSP платформа называется `MT6762`, но Android этой прошивки выбирает
++свои init/ueventd-файлы по имени `mt6765`. Когда LK записывал в FDT:
++
++```text
++/firmware/android/hardware = "mt6762"
++```
++
++Android загружал неправильный `ueventd.mt6762.rc`. Из-за этого не выполнялась
++штатная цепочка `init.mt6765.rc`, не монтировались `nvcfg`, `data` и другие
++разделы, а ошибка выглядела как падение HWC или проблема ядра.
++
++Рабочий вариант сохраняет `MTK_PLATFORM_REVISED=MT6762` для внутренней логики
++BSP, но передает Android:
++
++```text
++[FDT_ANDROID] hardware=mt6765
++```
++
++После этого normal boot использует `ueventd.mt6765.rc`, выполняет `mount_all`
++и проходит тот же путь, что стоковый загрузчик.
++
++## Сборка
++
++Встроенные cross-GCC 4.9 и `mkimage` рассчитаны на x86-64 Linux с glibc, включая
++WSL2. Для unsigned-сборки нужны GNU Make, `/usr/bin/python2` и GNU coreutils.
++ARM toolchain, binutils, MTK `mkimage` и платформенные static libraries уже
++лежат в репозитории; во время сборки ничего не скачивается.
++
++Из публичной версии намеренно исключены закрытые signing-ключи и стоковый
++`main_dtb_header.bin`. Его нужно получить из разрешенного вам источника и
++положить локально в корень репозитория. Полный список обязательных, встроенных
++и дополнительных компонентов приведен в
++[BUILD_DEPENDENCIES.md](BUILD_DEPENDENCIES.md).
++
++Для unsigned-сборки:
++
++```bash
++make -j"$(nproc)" oppo6762_18540 NO_SIGN=yes
++```
++
++`NO_SIGN=no` допустим только с собственными или разрешенными ключами.
++`NO_SIGN=yes` подходит лишь для устройства, чья boot chain принимает unsigned
++образ; это не обход secure boot на заблокированном телефоне.
++
++Результат:
++
++```text
++build-oppo6762_18540/flash/lk.bin
++```
++
++Файл автоматически дополняется до 1 МиБ. Последний проверенный на устройстве
++образ имел SHA-256:
++
++```text
++39dd21f6b769b80e873edbc007276f5fda85811ffcae3b0d5f3ebfb78d5515aa
++```
++
++## Прошивка
++
++Сначала сохраните резервные копии `lk` и `lk2`. Для уже разблокированного
++телефона в fastboot:
++
++```bash
++fastboot flash lk  build-oppo6762_18540/flash/lk.bin
++fastboot flash lk2 build-oppo6762_18540/flash/lk.bin
++fastboot reboot
++```
++
++Этот образ нельзя прошивать на другие модели, ревизии памяти или панели.
++Прошивка загрузчика всегда несет риск полного кирпича и потери данных.
++
++Подробности разработки и найденные закономерности находятся в
++[OPPO_A1K_PORT.md](OPPO_A1K_PORT.md).
+diff --git a/docs/REDISTRIBUTION_AUDIT.md b/docs/REDISTRIBUTION_AUDIT.md
+new file mode 100644
+index 0000000..f5c6727
+--- /dev/null
++++ b/docs/REDISTRIBUTION_AUDIT.md
+@@ -0,0 +1,44 @@
++# Redistribution Audit
++
++This is a technical provenance review, not legal advice. It records what was
++checked before public release of the OPPO A1K port on 2026-07-10.
++
++## Findings
++
++| Category | Finding | Public-release treatment |
++| --- | --- | --- |
++| LK base | Root tree contains the LK MIT license plus many per-file notices. | Keep the root license; do not describe the whole tree as MIT. |
++| Kernel-derived LCM | The ILI9881C driver has an OPPO copyright header and was taken from the OPPO A1K GPL kernel-source lineage. | Retain headers, provide provenance, and publish the corresponding source. |
++| Stock DTB | `main_dtb_header.bin` is a binary DTB/header derived from stock firmware. | Removed from Git tracking; each developer obtains it locally from firmware they may use. |
++| Signing material | `certs/IMG_AUTH_KEY.ini` contains `CUSTOM_RSA_D`; `VERIFIED_BOOT_IMG_AUTH_KEY.ini` contains `AUTH_PARAM_D`. | Removed from Git tracking and ignored. They are treated as private key material. |
++| Firmware and diagnostics | `expdb`, OFP packages, device identifiers, partition dumps, and local binaries can contain proprietary or personal data. | Ignored and prohibited from releases. |
++| Prebuilt tools/libraries | The inherited BSP includes prebuilt toolchain and vendor artifacts with varying notices. | Preserve notices; do not claim ownership or relicensing rights. |
++
++## Remaining Risk
++
++Removing files from the current tree does not erase them from already-published
++Git history, forks, clones, caches, or releases. A full public remediation
++requires making the current repository private or deleting it, then publishing
++a new clean patch-only repository with fresh history.
++
++## Recommended Public Release Model
++
++1. Keep the complete hardware research checkout private.
++2. Publish a clean repository containing documentation, target configuration,
++   source patches, and GPL-compliant kernel-derived source only.
++3. Require users to supply their own legally obtained DTB and signing material.
++4. Attach no flashable LK binary unless its entire corresponding source and all
++   redistribution rights have been audited.
++5. Preserve upstream copyright notices and link to the relevant source
++   repositories and commits.
++
++## Pre-Release Checklist
++
++- [ ] No file contains an IMEI, serial number, MAC address, token, password,
++      private key, or real device log.
++- [ ] No raw firmware, OFP package, boot image, DTB, logo, or partition dump is
++      added without confirmed redistribution permission.
++- [ ] Every imported GPL file retains its header and a source/provenance link.
++- [ ] The README says that no single license applies to the entire tree.
++- [ ] A qualified lawyer has reviewed the intended distribution if the project
++      will be widely published or sold.
 diff --git a/gcc/bin/arm-linux-androideabi-gcc b/gcc/bin/arm-linux-androideabi-gcc
 index 987c8b0..9e86aa8 100755
 --- a/gcc/bin/arm-linux-androideabi-gcc
@@ -8322,6 +10357,16 @@ index 739d18f..4b308da 100644
  		uart_putc(*s++);
  }
 -
+diff --git a/platform/mt6580/rules.mk b/platform/mt6580/rules.mk
+index 76b7793..9d962f3 100644
+--- a/platform/mt6580/rules.mk
++++ b/platform/mt6580/rules.mk
+@@ -259,4 +259,4 @@ MTK_RC_TO_VENDOR ?= yes
+ 
+ LINKER_SCRIPT += $(BUILDDIR)/system-onesegment.ld
+ 
+-CFG_LOG_STORE_SUPPORT := no
++CFG_LOG_STORE_SUPPORT := yes
 diff --git a/platform/mt6765/atags.c b/platform/mt6765/atags.c
 index 32923e1..b2974e3 100644
 --- a/platform/mt6765/atags.c
@@ -9327,6 +11372,30 @@ index cee3fa7..d145092 100644
  extern void mtk_wdt_init(void);
  extern BOOL mtk_is_rgu_trigger_reset(void);
  extern void mtk_arch_reset(char mode);
+diff --git a/platform/mt6765/include/platform/oppo_boot_stage.h b/platform/mt6765/include/platform/oppo_boot_stage.h
+new file mode 100644
+index 0000000..065cc97
+--- /dev/null
++++ b/platform/mt6765/include/platform/oppo_boot_stage.h
+@@ -0,0 +1,18 @@
++#ifndef __OPPO_BOOT_STAGE_H
++#define __OPPO_BOOT_STAGE_H
++
++enum oppo_boot_stage {
++	OPPO_BOOT_STAGE_LK_ENTERED = 0x10,
++	OPPO_BOOT_STAGE_STORAGE_READY = 0x20,
++	OPPO_BOOT_STAGE_IMAGE_LOADED = 0x30,
++	OPPO_BOOT_STAGE_DTB_READY = 0x40,
++	OPPO_BOOT_STAGE_DISPLAY_HANDOFF = 0x50,
++	OPPO_BOOT_STAGE_KERNEL_JUMP = 0x60,
++};
++
++void oppo_boot_stage_mark(unsigned int stage);
++unsigned int oppo_boot_stage_get(void);
++const char *oppo_boot_stage_name(unsigned int stage);
++const char *oppo_boot_stage_value(void);
++
++#endif /* __OPPO_BOOT_STAGE_H */
 diff --git a/platform/mt6765/include/platform/primary_display.h b/platform/mt6765/include/platform/primary_display.h
 index 66196ca..685b776 100644
 --- a/platform/mt6765/include/platform/primary_display.h
@@ -11101,12 +13170,32 @@ index a66c5fb..e0a0e18 100644
  
  #endif /* __PAL_LOG_H__ */
 -
+diff --git a/project/k65v1_32_bsp.mk b/project/k65v1_32_bsp.mk
+index 71c8d61..a4ffb48 100644
+--- a/project/k65v1_32_bsp.mk
++++ b/project/k65v1_32_bsp.mk
+@@ -27,13 +27,13 @@ SPM_FW_USE_PARTITION = yes
+ BOOT_LOGO := fhd
+ DEBUG := 2
+ #DEFINES += WITH_DEBUG_DCC=1
+-DEFINES += WITH_DEBUG_UART=1
++DEFINES += WITH_DEBUG_UART=0
+ #DEFINES += WITH_DEBUG_FBCON=1
+ CUSTOM_LK_USB_UNIQUE_SERIAL=no
+ MTK_TINYSYS_SCP_SUPPORT = yes
+ MTK_TINYSYS_SSPM_SUPPORT = yes
+ #DEFINES += NO_POWER_OFF=y
+-#DEFINES += FPGA_BOOT_FROM_LK=y
++DEFINES += FPGA_BOOT_FROM_LK=y
+ MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G
+ MTK_GOOGLE_TRUSTY_SUPPORT = no
+ DEFINES += MTK_MT6370_PMU
 diff --git a/project/oppo6762_18540.mk b/project/oppo6762_18540.mk
 new file mode 100644
-index 0000000..0413ebb
+index 0000000..6508ba4
 --- /dev/null
 +++ b/project/oppo6762_18540.mk
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,201 @@
 +#
 +LOCAL_DIR := $(GET_LOCAL_DIR)
 +TARGET := oppo6762_18540
@@ -11257,6 +13346,17 @@ index 0000000..0413ebb
 +DEFINES += OPPO_BOOT_KEY_FASTBOOT_OR_MENU
 +DEFINES += OPPO_FIXED_PHYSICAL_BOOT_KEYS
 +DEFINES += OPPO_PREVENT_BOOTLOADER_RELOCK
++# Critical boot-chain flashes complete only after eMMC flush, full read-back,
++# and an exact SHA-256 comparison with the downloaded image.
++DEFINES += OPPO_CRITICAL_FLASH_VERIFY
++# Optional repair image. Enable with:
++#   make oppo6762_18540 OPPO_RESCUE_FASTBOOT=yes
++# It keeps only read-only diagnostics, RAM boot, a narrow flash allowlist,
++# reboot, and poweroff.
++OPPO_RESCUE_FASTBOOT ?= no
++ifeq ($(strip $(OPPO_RESCUE_FASTBOOT)),yes)
++DEFINES += OPPO_RESCUE_FASTBOOT
++endif
 +# Keep the boot/recovery framebuffer intact until the next stage draws over it.
 +# DEFINES += OPPO_CLEAR_BOOT_MENU_LAYER_BEFORE_BOOT
 +# DEFINES += OPPO_SKIP_BOOTMODE_KEY_LOOP
@@ -11307,6 +13407,52 @@ index 12d6b02..d56e630 100755
  # Copyright Statement:
  #
  # This software/firmware and related documentation ("MediaTek Software") are
+diff --git a/target/X5/rules.mk b/target/X5/rules.mk
+index c55c4e0..a5209b5 100644
+--- a/target/X5/rules.mk
++++ b/target/X5/rules.mk
+@@ -44,7 +44,7 @@ SCRATCH_SIZE     := 0x08000000 # 128MB
+ HAVE_CACHE_PL310 := no
+ MTK_LM_MODE := no
+ MTK_FASTBOOT_SUPPORT := yes
+-LK_PROFILING := no
++LK_PROFILING := yes
+ DEVICE_TREE_SUPPORT := yes
+ MTK_JTAG_SWITCH_SUPPORT := yes
+ 
+@@ -100,4 +100,4 @@ OBJS += \
+         $(LOCAL_DIR)/cust_display.o\
+         $(LOCAL_DIR)/cust_leds.o\
+         $(LOCAL_DIR)/power_off.o\
+-        $(LOCAL_DIR)/fastboot_oem_commands.o\
++        $(LOCAL_DIR)/fastboot_oem_commands.o\
+\ No newline at end of file
+diff --git a/target/k65v1_32_bsp/rules.mk b/target/k65v1_32_bsp/rules.mk
+index 1ac6a5f..273bc0d 100644
+--- a/target/k65v1_32_bsp/rules.mk
++++ b/target/k65v1_32_bsp/rules.mk
+@@ -21,17 +21,17 @@ endif
+ 
+ ifeq ($(MTK_MLC_NAND_SUPPORT), yes)
+ DEFINES += MTK_MLC_NAND_SUPPORT
+-MEMSIZE := 0x00900000 # 9MB
++MEMSIZE := 0x00400000 # 9MB
+ else ifeq ($(MTK_TLC_NAND_SUPPORT), yes)
+ DEFINES += MTK_TLC_NAND_SUPPORT
+-MEMSIZE := 0x00900000 # 9MB
++MEMSIZE := 0x00400000
+ else
+-MEMSIZE := 0x00400000 # 4MB
++MEMSIZE := 0x00400000
+ endif
+ 
+ 
+ SCRATCH_ADDR     := 0x48B00000
+-SCRATCH_SIZE     := 0x08000000 # 128MB
++SCRATCH_SIZE     := 0x09000000 # 144MB
+ 
+ HAVE_CACHE_PL310 := no
+ MTK_LM_MODE := yes
 diff --git a/target/oppo6762_18540/README b/target/oppo6762_18540/README
 new file mode 100644
 index 0000000..c9bae4d
@@ -15523,27 +17669,164 @@ index 0000000..8c29f9c
 +
 +	return 0;
 +}
-diff --git a/platform/mt6765/include/platform/oppo_boot_stage.h b/platform/mt6765/include/platform/oppo_boot_stage.h
+diff --git a/tests/bootimg_validator/Makefile b/tests/bootimg_validator/Makefile
 new file mode 100644
-index 0000000..065cc97
+index 0000000..a320e41
 --- /dev/null
-+++ b/platform/mt6765/include/platform/oppo_boot_stage.h
-@@ -0,0 +1,18 @@
-+#ifndef __OPPO_BOOT_STAGE_H
-+#define __OPPO_BOOT_STAGE_H
++++ b/tests/bootimg_validator/Makefile
+@@ -0,0 +1,21 @@
++CC ?= cc
++CFLAGS ?= -O2
++CFLAGS += -std=c11 -Wall -Wextra -Werror
++CPPFLAGS += -I../../platform/common/include -I../../platform/pal/inc \
++	-I../../app/mt_boot
 +
-+enum oppo_boot_stage {
-+	OPPO_BOOT_STAGE_LK_ENTERED = 0x10,
-+	OPPO_BOOT_STAGE_STORAGE_READY = 0x20,
-+	OPPO_BOOT_STAGE_IMAGE_LOADED = 0x30,
-+	OPPO_BOOT_STAGE_DTB_READY = 0x40,
-+	OPPO_BOOT_STAGE_DISPLAY_HANDOFF = 0x50,
-+	OPPO_BOOT_STAGE_KERNEL_JUMP = 0x60,
++TEST := bootimg_validator_test
++SOURCES := test_bootimg_validator.c ../../app/mt_boot/oppo_bootimg_validate.c
++
++.PHONY: all test clean
++
++all: $(TEST)
++
++$(TEST): $(SOURCES)
++	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) -o $@
++
++test: $(TEST)
++	./$(TEST)
++
++clean:
++	rm -f $(TEST)
+diff --git a/tests/bootimg_validator/README.md b/tests/bootimg_validator/README.md
+new file mode 100644
+index 0000000..0cb9d7d
+--- /dev/null
++++ b/tests/bootimg_validator/README.md
+@@ -0,0 +1,13 @@
++# Boot image validator tests
++
++These tests compile the same pure validator used by the LK `fastboot boot`
++path and run it on the host. No phone or flashable image is required.
++
++Run:
++
++```sh
++make -C tests/bootimg_validator test
++```
++
++The negative cases cover invalid magic and page size, oversized/truncated
++components, unsupported second stage, and invalid kernel/DTB target addresses.
+diff --git a/tests/bootimg_validator/test_bootimg_validator.c b/tests/bootimg_validator/test_bootimg_validator.c
+new file mode 100644
+index 0000000..20f3ca3
+--- /dev/null
++++ b/tests/bootimg_validator/test_bootimg_validator.c
+@@ -0,0 +1,109 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "oppo_bootimg_validate.h"
++
++#define TEST_KERNEL_ADDR  0x40080000U
++#define TEST_DTB_ADDR     0x47880000U
++#define TEST_LK_ADDR      0x48000000U
++#define TEST_RAMDISK_ADDR 0x51b00000U
++
++static const struct oppo_bootimg_limits limits = {
++	.max_kernel_size = 0x07800000U,
++	.max_ramdisk_size = 0x04000000U,
++	.max_dtb_size = 0x00080000U,
++	.max_download_size = 0x09000000U,
++	.kernel_addr = TEST_KERNEL_ADDR,
++	.ramdisk_addr = TEST_RAMDISK_ADDR,
++	.dtb_addr = TEST_DTB_ADDR,
 +};
 +
-+void oppo_boot_stage_mark(unsigned int stage);
-+unsigned int oppo_boot_stage_get(void);
-+const char *oppo_boot_stage_name(unsigned int stage);
-+const char *oppo_boot_stage_value(void);
++static struct bootimg_hdr valid_header(void)
++{
++	struct bootimg_hdr header;
 +
-+#endif /* __OPPO_BOOT_STAGE_H */
++	memset(&header, 0, sizeof(header));
++	memcpy(header.magic, BOOTIMG_MAGIC, BOOTIMG_MAGIC_SZ);
++	header.kernel_sz = 0x00800000U;
++	header.kernel_addr = TEST_KERNEL_ADDR;
++	header.ramdisk_sz = 0x00400000U;
++	header.ramdisk_addr = TEST_RAMDISK_ADDR;
++	header.tags_addr = TEST_DTB_ADDR;
++	header.page_sz = 4096U;
++	header.header_version = BOOT_HEADER_VERSION_TWO;
++	header.dtb_size = 0x00010000U;
++	header.dtb_addr = TEST_DTB_ADDR;
++	return header;
++}
++
++static uint64_t required_for(const struct bootimg_hdr *header)
++{
++	uint64_t required = 0;
++	const char *error = NULL;
++
++	if (oppo_bootimg_validate(header, limits.max_download_size, &limits,
++		&required, &error) != 0) {
++		fprintf(stderr, "valid fixture rejected: %s\n", error);
++		exit(1);
++	}
++	return required;
++}
++
++static void expect_rejected(const char *name, struct bootimg_hdr header,
++	uint64_t downloaded_size)
++{
++	uint64_t required = 0;
++	const char *error = NULL;
++
++	if (oppo_bootimg_validate(&header, downloaded_size, &limits,
++		&required, &error) == 0) {
++		fprintf(stderr, "FAIL: %s was accepted\n", name);
++		exit(1);
++	}
++	printf("PASS: %-24s (%s)\n", name, error ? error : "no error");
++}
++
++int main(void)
++{
++	struct bootimg_hdr header = valid_header();
++	uint64_t required = required_for(&header);
++
++	header = valid_header();
++	header.magic[0] = 'X';
++	expect_rejected("bad magic", header, limits.max_download_size);
++
++	header = valid_header();
++	header.page_sz = 0;
++	expect_rejected("zero page size", header, limits.max_download_size);
++
++	header = valid_header();
++	header.kernel_sz = 0xffffffffU;
++	expect_rejected("size overflow", header, limits.max_download_size);
++
++	header = valid_header();
++	header.kernel_sz = limits.max_kernel_size + 1U;
++	expect_rejected("kernel too large", header, limits.max_download_size);
++
++	header = valid_header();
++	expect_rejected("truncated ramdisk", header, required - 1U);
++
++	header = valid_header();
++	header.kernel_addr = TEST_LK_ADDR;
++	expect_rejected("kernel overlaps LK", header, limits.max_download_size);
++
++	header = valid_header();
++	header.dtb_addr = TEST_DTB_ADDR + 0x1000U;
++	expect_rejected("invalid DTB address", header, limits.max_download_size);
++
++	header = valid_header();
++	header.second_sz = 4096U;
++	expect_rejected("second stage present", header, limits.max_download_size);
++
++	header = valid_header();
++	header.ramdisk_sz = limits.max_ramdisk_size + 1U;
++	expect_rejected("ramdisk too large", header, limits.max_download_size);
++
++	puts("All boot image validator tests passed.");
++	return 0;
++}

@@ -19,8 +19,14 @@ libraries**. It is a clean-history patch repository, not a firmware mirror.
   `system`, and `vendor`;
 - full-screen fastboot UI with live operation, partition, and progress data;
 - read-only build, boot, watchdog, panel, battery, and LK-copy diagnostics;
+- strict RAM-boot image validation with host-side malformed-image tests;
+- eMMC flush, full read-back, and SHA-256 verification for critical flashes;
+- a restricted `OPPO_RESCUE_FASTBOOT=yes` repair build profile;
 - fixed CPH1923 physical key mapping that does not depend on DTBO;
-- protection against accidental bootloader relocking during fastboot;
+- fail-closed protection against accidental relocking, with no automatic
+  `seccfg` repair;
+- a colored, pulsing `fastboot flashing unlock` confirmation whose default is
+  `CANCEL` and which requires `VOL+` followed by `POWER`;
 - normal-boot command-line and ramdisk handling;
 - watchdog and handoff diagnostics used to isolate boot failures.
 
@@ -28,7 +34,9 @@ The investigation history and implementation notes are in
 [`docs/OPPO_A1K_PORT.md`](docs/OPPO_A1K_PORT.md). A Russian overview is in
 [`docs/README_RU.md`](docs/README_RU.md). New commands and physical keys are
 listed in [`docs/FASTBOOT.md`](docs/FASTBOOT.md). Release history is recorded
-in [`CHANGELOG.md`](CHANGELOG.md).
+in [`CHANGELOG.md`](CHANGELOG.md). The critical-flash, relock-guard, rescue,
+RAM-boot, and LK-copy evidence model is documented in
+[`docs/FASTBOOT_SAFETY.md`](docs/FASTBOOT_SAFETY.md).
 
 ## Apply the patch
 
@@ -69,4 +77,7 @@ with or endorsed by OPPO or MediaTek.
 ## Safety
 
 Bootloader development can permanently make a device unbootable. Keep verified
-partition backups and test on hardware you own. No warranty is provided.
+partition backups and test on hardware you own. Flash and test one known-good
+LK copy before replacing the other. The port does not claim that `lk2` is an
+automatic fallback: the inspected preloader does not pass a trustworthy loaded
+copy identifier to LK. No warranty is provided.

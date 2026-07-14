@@ -62,6 +62,14 @@ The port adds these variables:
 | `dram-size` | Detected physical DRAM size in hexadecimal bytes. |
 | `expdb-size` | Actual size of the `expdb` partition. |
 | `active-lk-partition` | Reserved for preloader slot reporting. It currently returns `unknown` because this preloader does not pass a trustworthy source-slot identifier. |
+| `lk-active-bit`, `lk2-active-bit` | GPT active attributes read for the two LK partitions. |
+| `lk-selection-policy` | Partition predicted by the inspected preloader policy; this is not proof of the copy that actually ran. |
+| `running-build-in` | Partition images containing the exact `LK_VER_TAG` of the executing build: `lk`, `lk2`, `both`, or `neither`. |
+| `lk-source-evidence` | Summary of agreement or conflict between build-tag evidence and GPT policy. |
+| `preloader-bootarg-format` | Parsed preloader handoff format (`atag`, `legacy`, or invalid/unknown). |
+| `preloader-bootarg-addr`, `preloader-bootarg-size` | Address and size of the handoff block supplied to LK. |
+| `preloader-bootarg-units` | Number of valid known ATAG units scanned by LK. |
+| `preloader-unknown-tags` | Number of tags outside the known MT6765 set. Unknown tags are reported, not assumed to identify an LK copy. |
 | `battery-voltage` | PMIC battery voltage in millivolts. |
 | `battery-level` | Last exact Android UI SOC stored by the MT6357 fuel-gauge driver in `RTC_AL_MTH`; no voltage interpolation is used. |
 | `battery-soc-ok` | Indicates that the RTC UI-SOC reader is enabled in this target. |
@@ -69,11 +77,16 @@ The port adds these variables:
 | `lk-sha256-0`, `lk-sha256-1` | First and second halves of the SHA-256 digest of `lk`. Join the two values to obtain the full 64-character digest. |
 | `lk2-sha256-0`, `lk2-sha256-1` | First and second halves of the SHA-256 digest of `lk2`. |
 | `lk-copies-match` | `yes` when the complete `lk` and `lk2` partition images have identical sizes and SHA-256 digests. |
+| `rescue-fastboot` | `yes` when the restricted `OPPO_RESCUE_FASTBOOT` build profile is active. |
 | `max-fetch-size` | Maximum payload accepted by one fetch transaction. The non-packet-aligned value avoids the MTK QMU tail failure. |
 | `fetch-partitions` | Comma-separated allowlist of readable partitions. |
 
 The hash variables are split because one fastboot response is limited to 64
-bytes. All LK copy checks are read-only.
+bytes. All LK copy checks are read-only. The stock preloader selects `lk2`
+only when the `lk` active bit is zero and the `lk2` bit is nonzero, but the
+handoff structure has no trustworthy loaded-copy field. Consequently
+`active-lk-partition` stays `unknown`; `lk-selection-policy` and
+`running-build-in` are deliberately exposed as separate evidence.
 
 ## Read-only partition fetch
 
@@ -154,15 +167,50 @@ used by the next LK boot.
 
 The CPH1923 target does not register `fastboot flashing lock`. Its legacy
 MediaTek relock handler also rejects direct calls, and fastboot verifies the
-persistent lock state at startup and before every command. This prevents an
-accidental volume-key sequence or host command from silently relocking the
-development device.
+persistent lock state at startup and before every command. If the state is
+locked or cannot be read, LK remains in fastboot and blocks boot, reboot,
+poweroff, flash, erase, and on-screen exit actions. It does not modify
+`seccfg`. Read-only diagnostics, download transport, and the explicit
+`fastboot flashing unlock` flow remain available.
+
+`fastboot flashing unlock` uses a colored confirmation screen with a pulsing
+orange header. `CANCEL - KEEP LOCKED` is selected by default; `VOL+` changes
+the selection and `POWER` confirms it. There is no timeout or automatic
+unlock. The normal platform unlock path still performs its expected userdata
+wipe after deliberate confirmation. The destructive selection uses amber,
+while red is reserved for actual failures. If the device is already unlocked,
+the command returns `already unlocked` without showing a false locked screen,
+rewriting state, or wiping data. An unreadable lock state fails without making
+changes.
+
+Writes to `lk`, `lk2`, `boot`, `recovery`, and `dtbo` use this completion
+sequence: validate, hash the download, write, flush eMMC, read the complete
+image back, hash it again, compare, and only then report `OKAY` and 100
+percent. If verification fails, LK displays `FLASH VERIFY FAILED` and warns
+that the device must not be rebooted. `lk` and `lk2` additionally require at
+least 3700 mV and must be flashed with separate host commands.
 
 The low-battery write check is retained for the large `system` and `vendor`
-partitions. Smaller recovery paths including `expdb`, `boot`, `recovery`,
-`dtbo`, `lk`, and `lk2` are not blocked by that policy. This is intended for
+partitions. Smaller recovery paths including `expdb`, `boot`, `recovery`, and
+`dtbo` are not blocked by that long-operation policy. This is intended for
 repair access, not as a claim that flashing without stable external power is
 safe.
+
+## Restricted rescue build
+
+Build the reduced repair interface with:
+
+```bash
+make -j"$(nproc)" oppo6762_18540 NO_SIGN=yes OPPO_RESCUE_FASTBOOT=yes
+fastboot getvar rescue-fastboot
+```
+
+It permits diagnostics, bounded fetch, RAM boot, separate writes to `boot`,
+`recovery`, `dtbo`, or `lk2`, reboot/poweroff when unlocked, and the explicit
+unlock flow. It centrally rejects erase, ultra-flash, `seccfg`, preloader,
+NVRAM/NVDATA, protect partitions, `lk`, and every command outside that
+allowlist. See [`FASTBOOT_SAFETY.md`](FASTBOOT_SAFETY.md) for the exact policy
+and host-side boot-image test command.
 
 ## On-screen progress
 
