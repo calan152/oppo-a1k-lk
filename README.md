@@ -7,6 +7,12 @@ The repository intentionally contains **no flashable images, device dumps,
 private signing keys, extracted DTB/DTBO files, or MediaTek prebuilt
 libraries**. It is a clean-history patch repository, not a firmware mirror.
 
+<p align="center">
+  <img src="docs/images/fastboot-ui.png" width="360" alt="OPPO A1K LK full-screen Fastboot UI">
+</p>
+
+<p align="center"><sub>Framebuffer preview rendered from the current LK UI code; device-unique values are redacted.</sub></p>
+
 ## What was implemented
 
 - OPPO A1K target and project configuration;
