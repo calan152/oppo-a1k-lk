@@ -17,13 +17,18 @@ libraries**. It is a clean-history patch repository, not a firmware mirror.
 - RAM boot for downloaded normal and recovery images;
 - read-only fastboot `fetch` support for `expdb`, `boot`, `recovery`, `dtbo`,
   `system`, and `vendor`;
+- full-screen fastboot UI with live operation, partition, and progress data;
+- read-only build, boot, watchdog, panel, battery, and LK-copy diagnostics;
+- fixed CPH1923 physical key mapping that does not depend on DTBO;
+- protection against accidental bootloader relocking during fastboot;
 - normal-boot command-line and ramdisk handling;
 - watchdog and handoff diagnostics used to isolate boot failures.
 
 The investigation history and implementation notes are in
 [`docs/OPPO_A1K_PORT.md`](docs/OPPO_A1K_PORT.md). A Russian overview is in
-[`docs/README_RU.md`](docs/README_RU.md). Release history is recorded in
-[`CHANGELOG.md`](CHANGELOG.md).
+[`docs/README_RU.md`](docs/README_RU.md). New commands and physical keys are
+listed in [`docs/FASTBOOT.md`](docs/FASTBOOT.md). Release history is recorded
+in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Apply the patch
 

@@ -149,9 +149,16 @@ driver reports after handoff.
 
 ## Boot Modes
 
-The recovery key opens the boot menu as it does in stock behavior; it is not a
-direct recovery request. The extended menu writes both `g_boot_mode` and the
-boot argument mode, then applies mode-specific command-line and init markers.
+The CPH1923 target now uses fixed physical inputs rather than the KPD key
+assignment from DTBO. Matrix key `1` is `VOL-`, PMIC home/reset input `17` is
+`VOL+`, and PMIC input `8` is `POWER`. One or held `VOL-` enters fastboot,
+double `VOL-` opens the extended Boot Menu, and `VOL+` enters recovery. Inside
+the screen menus, `VOL+` selects and `POWER` confirms.
+
+The extended menu writes both `g_boot_mode` and the boot argument mode, then
+applies mode-specific command-line and init markers. The fixed mapping is a
+board contract for CPH1923 and must be re-audited before porting to another
+device.
 
 Supported entries:
 
