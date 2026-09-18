@@ -1,0 +1,90 @@
+name: LK repository checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanity-check:
+    name: Repository sanity check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "README.md"
+            "CHANGELOG.md"
+            "LICENSE.md"
+            "docs/FASTBOOT.md"
+            "docs/FASTBOOT_SAFETY.md"
+            "docs/OPPO_A1K_PORT.md"
+            "docs/README_RU.md"
+            "patches/0001-oppo-a1k-cph1923-port.patch"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error file=$file::Required file is missing or empty"
+              exit 1
+            fi
+            echo "OK: $file"
+          done
+
+      - name: Validate LK patch structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          patch="patches/0001-oppo-a1k-cph1923-port.patch"
+
+          grep -q '^diff --git ' "$patch" || {
+            echo "::error file=$patch::No git diff sections found"
+            exit 1
+          }
+
+          grep -q '^--- a/' "$patch" || {
+            echo "::error file=$patch::No original-file headers found"
+            exit 1
+          }
+
+          grep -q '^+++ b/' "$patch" || {
+            echo "::error file=$patch::No modified-file headers found"
+            exit 1
+          }
+
+          echo "Patch structure looks valid."
+          echo "Changed files in patch: $(grep -c '^diff --git ' "$patch")"
+
+      - name: Check Git object integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fsck --full
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## OPPO A1K LK repository check"
+            echo
+            echo "- Repository structure: OK"
+            echo "- LK patch structure: OK"
+            echo "- Git object integrity: OK"
+            echo
+            echo "No repository files were modified by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
