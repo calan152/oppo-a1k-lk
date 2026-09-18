@@ -1,0 +1,107 @@
+name: LK build environment
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-lk-env.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  env-check:
+    name: Ubuntu 22.04 + Python 2.7 environment check
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            make \
+            perl \
+            git \
+            curl \
+            ca-certificates \
+            bc \
+            bison \
+            flex \
+            libncurses-dev \
+            zlib1g-dev \
+            libc6-i386 \
+            lib32stdc++6 \
+            lib32z1
+
+      - name: Install Python 2.7.18
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            -o /tmp/miniconda2.sh \
+            https://repo.anaconda.com/miniconda/Miniconda2-py27_4.8.3-Linux-x86_64.sh
+
+          bash /tmp/miniconda2.sh -b -p "$HOME/miniconda2"
+
+          echo "$HOME/miniconda2/bin" >> "$GITHUB_PATH"
+
+      - name: Verify legacy LK environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== OS ==="
+          lsb_release -a || true
+          uname -a
+
+          echo
+          echo "=== Python ==="
+          python --version 2>&1
+          python --version 2>&1 | grep -F "Python 2.7.18"
+
+          echo
+          echo "=== Build tools ==="
+          make --version | head -n 1
+          perl -v | grep -m1 "This is perl"
+          gcc --version | head -n 1
+          git --version
+
+          echo
+          echo "=== Python 2 smoke test ==="
+          python - <<'PY'
+          import sys
+          import struct
+
+          print("python:", sys.version)
+          print("pointer-size:", struct.calcsize("P") * 8)
+
+          assert sys.version_info[:3] == (2, 7, 18)
+
+          print("Python 2.7.18 smoke test: OK")
+          PY
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## LK build environment"
+            echo
+            echo "- Runner: Ubuntu 22.04"
+            echo "- Python: 2.7.18"
+            echo "- GNU Make: available"
+            echo "- Perl: available"
+            echo "- GCC/build-essential: available"
+            echo "- 32-bit compatibility libraries: installed"
+            echo
+            echo "Environment check only."
+            echo "lk.bin is not built yet."
+            echo "README and project sources are not modified."
+          } >> "$GITHUB_STEP_SUMMARY"
