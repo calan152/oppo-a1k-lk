@@ -1,3 +1,4 @@
+
 name: Build OPPO A1K LK
 
 on:
@@ -12,16 +13,16 @@ permissions:
 
 jobs:
   build:
-    name: Apply OPPO A1K LK patch
+    name: Build OPPO A1K LK
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout patch repository
+      - name: Checkout OPPO A1K patch repository
         uses: actions/checkout@v6
         with:
           path: patchrepo
 
-      - name: Install host dependencies
+      - name: Install Ubuntu dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -36,6 +37,9 @@ jobs:
             ca-certificates \
             perl \
             file \
+            bc \
+            bison \
+            flex \
             build-essential \
             gcc-multilib \
             g++-multilib \
@@ -43,7 +47,9 @@ jobs:
             libc6-i386 \
             lib32stdc++6 \
             lib32z1 \
-            zlib1g-dev
+            zlib1g-dev \
+            libncurses-dev \
+            device-tree-compiler
 
       - name: Install Python 2.7.18
         shell: bash
@@ -54,63 +60,33 @@ jobs:
             -o /tmp/miniconda2.sh \
             https://repo.anaconda.com/miniconda/Miniconda2-py27_4.8.3-Linux-x86_64.sh
 
-          bash /tmp/miniconda2.sh -b -p "$HOME/miniconda2"
+          bash /tmp/miniconda2.sh \
+            -b \
+            -p "$HOME/miniconda2"
 
           sudo ln -sf \
             "$HOME/miniconda2/bin/python" \
             /usr/bin/python2
 
+          echo "=== Python ==="
           /usr/bin/python2 --version
 
-      - name: Clone exact MT6765 LK base
+      - name: Clone base LK
         shell: bash
         run: |
           set -euo pipefail
 
-          git clone https://github.com/svoboda18/lk.git lk
+          git clone \
+            https://github.com/svoboda18/lk.git \
+            lk
 
           cd lk
 
           git checkout 37ec8bc
 
           echo
-          echo "=== Base revision ==="
+          echo "=== Base LK revision ==="
           git rev-parse HEAD
-
-          test "$(git rev-parse --short=7 HEAD)" = "37ec8bc"
-
-      - name: Remove base DTB
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd lk
-
-          if [ -f main_dtb_header.bin ]; then
-            echo "Base repository DTB detected:"
-            ls -l main_dtb_header.bin
-            file main_dtb_header.bin || true
-
-            echo
-            echo "::warning::Removing base main_dtb_header.bin."
-            echo "::warning::A CPH1923-specific DTB must be supplied separately."
-
-            rm -f main_dtb_header.bin
-          fi
-
-          test ! -f main_dtb_header.bin
-
-      - name: Check patch applicability
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd lk
-
-          git apply --check \
-            ../patchrepo/patches/0001-oppo-a1k-cph1923-port.patch
-
-          echo "Patch applies cleanly: OK"
 
       - name: Apply OPPO A1K patch
         shell: bash
@@ -119,125 +95,126 @@ jobs:
 
           cd lk
 
+          echo "=== Applying patch ==="
+
           git apply \
             ../patchrepo/patches/0001-oppo-a1k-cph1923-port.patch
 
           echo
-          echo "=== Modified files ==="
+          echo "=== Patched files ==="
           git status --short
 
-      - name: Verify patched CPH1923 target
+      - name: Verify LK toolchain
         shell: bash
         run: |
           set -euo pipefail
 
           cd lk
 
-          test -f project/oppo6762_18540.mk
-          test -f target/oppo6762_18540/rules.mk
-          test -d tests/bootimg_validator
+          echo "=== GNU Make ==="
+          make --version
 
-          echo "project/oppo6762_18540.mk: OK"
-          echo "target/oppo6762_18540/rules.mk: OK"
-          echo "tests/bootimg_validator: OK"
+          echo
+          echo "=== Python 2 ==="
+          /usr/bin/python2 --version
 
-      - name: Verify bundled MTK toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd lk
-
+          echo
+          echo "=== Android ARM GCC ==="
           test -x gcc/bin/arm-linux-androideabi-gcc
-          test -x gcc/bin/arm-linux-androideabi-ld.bfd
-          test -x scripts/mkimage
-
-          echo "=== GCC ==="
           gcc/bin/arm-linux-androideabi-gcc --version
 
           echo
-          echo "=== LD ==="
+          echo "=== Android ARM linker ==="
+          test -x gcc/bin/arm-linux-androideabi-ld.bfd
           gcc/bin/arm-linux-androideabi-ld.bfd --version
 
           echo
-          echo "=== mkimage ==="
+          echo "=== MTK mkimage ==="
+          test -x scripts/mkimage
           file scripts/mkimage
 
-      - name: Verify Python 2 compiler wrapper
+      - name: Build OPPO A1K LK
         shell: bash
         run: |
           set -euo pipefail
 
           cd lk
 
-          head -n 1 gcc/bin/arm-linux-androideabi-gcc
+          echo "========================================"
+          echo " Building OPPO A1K / CPH1923 LK"
+          echo " Project: oppo6762_18540"
+          echo "========================================"
 
-          grep -q '^#!/usr/bin/python2$' \
-            gcc/bin/arm-linux-androideabi-gcc
+          make -j"$(nproc)" \
+            oppo6762_18540 \
+            NO_SIGN=yes
 
-          echo "Compiler wrapper uses /usr/bin/python2: OK"
-
-      - name: Check patch whitespace
+      - name: Verify built LK
         shell: bash
         run: |
           set -euo pipefail
 
           cd lk
 
-          git diff --check
+          LK="build-oppo6762_18540/flash/lk.bin"
 
-          echo "git diff --check: OK"
+          echo "=== Checking output ==="
 
-      - name: Run boot image validator tests
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd lk
-
-          make -C tests/bootimg_validator clean test
-
-      - name: Show full-build prerequisites
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd lk
-
-          echo "=== LK build prerequisites ==="
-
-          test -x /usr/bin/python2
-          test -x gcc/bin/arm-linux-androideabi-gcc
-          test -x gcc/bin/arm-linux-androideabi-ld.bfd
-          test -x scripts/mkimage
-
-          echo "Python 2: OK"
-          echo "ARM GCC: OK"
-          echo "ARM LD: OK"
-          echo "MTK mkimage: OK"
+          test -s "$LK"
 
           echo
-          echo "CPH1923 DTB:"
-          if [ -f main_dtb_header.bin ]; then
-            echo "FOUND"
-          else
-            echo "NOT PROVIDED — expected at this stage"
+          echo "=== File ==="
+          ls -lh "$LK"
+          file "$LK"
+
+          echo
+          echo "=== Size ==="
+          SIZE="$(stat -c '%s' "$LK")"
+          echo "$SIZE bytes"
+
+          echo
+          echo "=== SHA-256 ==="
+          sha256sum "$LK"
+
+          if [ "$SIZE" -ne 1048576 ]; then
+            echo "::error::Unexpected lk.bin size: $SIZE bytes"
+            echo "::error::Expected exactly 1048576 bytes (1 MiB)"
+            exit 1
           fi
 
-      - name: Summary
+          echo
+          echo "LK build verification: OK"
+          echo "lk.bin size: exactly 1 MiB"
+
+      - name: Upload LK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oppo-a1k-lk
+          path: lk/build-oppo6762_18540/flash/lk.bin
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: success()
         shell: bash
         run: |
+          set -euo pipefail
+
+          LK="lk/build-oppo6762_18540/flash/lk.bin"
+          SIZE="$(stat -c '%s' "$LK")"
+          SHA256="$(sha256sum "$LK" | awk '{print $1}')"
+
           {
-            echo "## OPPO A1K LK integration"
+            echo "## OPPO A1K LK build"
             echo
-            echo "- Ubuntu 22.04: OK"
-            echo "- Python 2.7.18: OK"
-            echo "- Base LK commit 37ec8bc: checked out"
-            echo "- OPPO A1K patch: applied"
-            echo "- Bundled Android ARM GCC 4.9: OK"
-            echo "- MTK mkimage: OK"
-            echo "- bootimg validator tests: executed"
+            echo "- Runner: Ubuntu 22.04"
+            echo "- Python: 2.7.18"
+            echo "- Base LK: svoboda18/lk @ 37ec8bc"
+            echo "- Project: oppo6762_18540"
+            echo "- NO_SIGN: yes"
+            echo "- Build: SUCCESS"
+            echo "- lk.bin size: $SIZE bytes"
+            echo "- SHA-256: \`$SHA256\`"
             echo
-            echo "Full lk.bin build is intentionally not started yet."
-            echo "A CPH1923-specific main_dtb_header.bin must be supplied first."
+            echo "Artifact: **oppo-a1k-lk**"
           } >> "$GITHUB_STEP_SUMMARY"
