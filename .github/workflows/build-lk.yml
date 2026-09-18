@@ -1,0 +1,199 @@
+name: Build OPPO A1K LK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-lk.yml"
+      - "patches/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: OPPO A1K LK build environment
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v6
+
+      - name: Install Ubuntu dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            make \
+            coreutils \
+            curl \
+            ca-certificates \
+            perl \
+            file \
+            bc \
+            bison \
+            flex \
+            build-essential \
+            gcc-multilib \
+            g++-multilib \
+            libc6-dev-i386 \
+            libc6-i386 \
+            lib32stdc++6 \
+            lib32z1 \
+            zlib1g-dev \
+            libncurses-dev \
+            device-tree-compiler
+
+      - name: Install Python 2.7.18
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            -o /tmp/miniconda2.sh \
+            https://repo.anaconda.com/miniconda/Miniconda2-py27_4.8.3-Linux-x86_64.sh
+
+          bash /tmp/miniconda2.sh -b -p "$HOME/miniconda2"
+
+          echo "$HOME/miniconda2/bin" >> "$GITHUB_PATH"
+
+          sudo ln -sf \
+            "$HOME/miniconda2/bin/python" \
+            /usr/bin/python2
+
+          echo "=== Python 2 ==="
+          /usr/bin/python2 --version
+
+      - name: Install Android ARM GCC 4.9
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf gcc
+
+          git clone \
+            --depth=1 \
+            --branch android-9.0.0_r61 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            gcc
+
+          echo "=== ARM GCC ==="
+          gcc/bin/arm-linux-androideabi-gcc --version
+
+          echo
+          echo "=== ARM LD ==="
+          gcc/bin/arm-linux-androideabi-ld.bfd --version
+
+      - name: Verify host environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Ubuntu ==="
+          lsb_release -a || true
+
+          echo
+          echo "=== Host tools ==="
+          make --version
+          perl -v
+          git --version
+
+          echo
+          echo "=== Python ==="
+          /usr/bin/python2 --version
+
+          echo
+          echo "=== ARM toolchain ==="
+          test -x gcc/bin/arm-linux-androideabi-gcc
+          test -x gcc/bin/arm-linux-androideabi-ld.bfd
+
+          gcc/bin/arm-linux-androideabi-gcc -dumpmachine
+
+      - name: Test ARM compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/test.c <<'EOF'
+          int test_add(int a, int b)
+          {
+              return a + b;
+          }
+          EOF
+
+          gcc/bin/arm-linux-androideabi-gcc \
+            -c /tmp/test.c \
+            -o /tmp/test.o
+
+          echo "=== Produced object ==="
+          file /tmp/test.o
+
+          echo
+          echo "ARM GCC smoke test: OK"
+
+      - name: Check LK build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Public patch repository ==="
+
+          test -f patches/0001-oppo-a1k-cph1923-port.patch
+
+          echo "Patch: OK"
+
+          echo
+          echo "=== Full BSP inputs ==="
+
+          if [ -f Makefile ]; then
+            echo "Makefile: FOUND"
+          else
+            echo "Makefile: NOT FOUND"
+          fi
+
+          if [ -d project ]; then
+            echo "project/: FOUND"
+          else
+            echo "project/: NOT FOUND"
+          fi
+
+          if [ -d target ]; then
+            echo "target/: FOUND"
+          else
+            echo "target/: NOT FOUND"
+          fi
+
+          if [ -x scripts/mkimage ]; then
+            echo "scripts/mkimage: FOUND"
+          else
+            echo "scripts/mkimage: NOT FOUND"
+          fi
+
+          if [ -f main_dtb_header.bin ]; then
+            echo "main_dtb_header.bin: FOUND"
+          else
+            echo "main_dtb_header.bin: NOT FOUND"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## OPPO A1K LK environment"
+            echo
+            echo "- Ubuntu 22.04: OK"
+            echo "- Python 2.7.18: OK"
+            echo "- GNU Make: OK"
+            echo "- Android ARM GCC 4.9: installed"
+            echo "- arm-linux-androideabi toolchain: tested"
+            echo
+            echo "The environment is ready for the MTK LK BSP."
+            echo
+            echo "Actual LK compilation is not enabled yet because"
+            echo "the public repository contains the source patch,"
+            echo "not the complete base BSP tree."
+          } >> "$GITHUB_STEP_SUMMARY"
