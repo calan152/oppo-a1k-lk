@@ -12,14 +12,16 @@ permissions:
 
 jobs:
   build:
-    name: OPPO A1K LK build environment
+    name: Apply OPPO A1K LK patch
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout patch repository
         uses: actions/checkout@v6
+        with:
+          path: patchrepo
 
-      - name: Install Ubuntu dependencies
+      - name: Install host dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -34,9 +36,6 @@ jobs:
             ca-certificates \
             perl \
             file \
-            bc \
-            bison \
-            flex \
             build-essential \
             gcc-multilib \
             g++-multilib \
@@ -44,9 +43,7 @@ jobs:
             libc6-i386 \
             lib32stdc++6 \
             lib32z1 \
-            zlib1g-dev \
-            libncurses-dev \
-            device-tree-compiler
+            zlib1g-dev
 
       - name: Install Python 2.7.18
         shell: bash
@@ -59,141 +56,188 @@ jobs:
 
           bash /tmp/miniconda2.sh -b -p "$HOME/miniconda2"
 
-          echo "$HOME/miniconda2/bin" >> "$GITHUB_PATH"
-
           sudo ln -sf \
             "$HOME/miniconda2/bin/python" \
             /usr/bin/python2
 
-          echo "=== Python 2 ==="
           /usr/bin/python2 --version
 
-      - name: Install Android ARM GCC 4.9
+      - name: Clone exact MT6765 LK base
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf gcc
+          git clone https://github.com/svoboda18/lk.git lk
 
-          git clone \
-            --depth=1 \
-            --branch android-9.0.0_r61 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-            gcc
+          cd lk
 
-          echo "=== ARM GCC ==="
+          git checkout 37ec8bc
+
+          echo
+          echo "=== Base revision ==="
+          git rev-parse HEAD
+
+          test "$(git rev-parse --short=7 HEAD)" = "37ec8bc"
+
+      - name: Remove base DTB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          if [ -f main_dtb_header.bin ]; then
+            echo "Base repository DTB detected:"
+            ls -l main_dtb_header.bin
+            file main_dtb_header.bin || true
+
+            echo
+            echo "::warning::Removing base main_dtb_header.bin."
+            echo "::warning::A CPH1923-specific DTB must be supplied separately."
+
+            rm -f main_dtb_header.bin
+          fi
+
+          test ! -f main_dtb_header.bin
+
+      - name: Check patch applicability
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          git apply --check \
+            ../patchrepo/patches/0001-oppo-a1k-cph1923-port.patch
+
+          echo "Patch applies cleanly: OK"
+
+      - name: Apply OPPO A1K patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          git apply \
+            ../patchrepo/patches/0001-oppo-a1k-cph1923-port.patch
+
+          echo
+          echo "=== Modified files ==="
+          git status --short
+
+      - name: Verify patched CPH1923 target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          test -f project/oppo6762_18540.mk
+          test -f target/oppo6762_18540/rules.mk
+          test -d tests/bootimg_validator
+
+          echo "project/oppo6762_18540.mk: OK"
+          echo "target/oppo6762_18540/rules.mk: OK"
+          echo "tests/bootimg_validator: OK"
+
+      - name: Verify bundled MTK toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          test -x gcc/bin/arm-linux-androideabi-gcc
+          test -x gcc/bin/arm-linux-androideabi-ld.bfd
+          test -x scripts/mkimage
+
+          echo "=== GCC ==="
           gcc/bin/arm-linux-androideabi-gcc --version
 
           echo
-          echo "=== ARM LD ==="
+          echo "=== LD ==="
           gcc/bin/arm-linux-androideabi-ld.bfd --version
 
-      - name: Verify host environment
+          echo
+          echo "=== mkimage ==="
+          file scripts/mkimage
+
+      - name: Verify Python 2 compiler wrapper
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Ubuntu ==="
-          lsb_release -a || true
+          cd lk
 
-          echo
-          echo "=== Host tools ==="
-          make --version
-          perl -v
-          git --version
+          head -n 1 gcc/bin/arm-linux-androideabi-gcc
 
-          echo
-          echo "=== Python ==="
-          /usr/bin/python2 --version
+          grep -q '^#!/usr/bin/python2$' \
+            gcc/bin/arm-linux-androideabi-gcc
 
-          echo
-          echo "=== ARM toolchain ==="
+          echo "Compiler wrapper uses /usr/bin/python2: OK"
+
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          git diff --check
+
+          echo "git diff --check: OK"
+
+      - name: Run boot image validator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          make -C tests/bootimg_validator clean test
+
+      - name: Show full-build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd lk
+
+          echo "=== LK build prerequisites ==="
+
+          test -x /usr/bin/python2
           test -x gcc/bin/arm-linux-androideabi-gcc
           test -x gcc/bin/arm-linux-androideabi-ld.bfd
+          test -x scripts/mkimage
 
-          gcc/bin/arm-linux-androideabi-gcc -dumpmachine
-
-      - name: Test ARM compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat > /tmp/test.c <<'EOF'
-          int test_add(int a, int b)
-          {
-              return a + b;
-          }
-          EOF
-
-          gcc/bin/arm-linux-androideabi-gcc \
-            -c /tmp/test.c \
-            -o /tmp/test.o
-
-          echo "=== Produced object ==="
-          file /tmp/test.o
+          echo "Python 2: OK"
+          echo "ARM GCC: OK"
+          echo "ARM LD: OK"
+          echo "MTK mkimage: OK"
 
           echo
-          echo "ARM GCC smoke test: OK"
-
-      - name: Check LK build inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== Public patch repository ==="
-
-          test -f patches/0001-oppo-a1k-cph1923-port.patch
-
-          echo "Patch: OK"
-
-          echo
-          echo "=== Full BSP inputs ==="
-
-          if [ -f Makefile ]; then
-            echo "Makefile: FOUND"
-          else
-            echo "Makefile: NOT FOUND"
-          fi
-
-          if [ -d project ]; then
-            echo "project/: FOUND"
-          else
-            echo "project/: NOT FOUND"
-          fi
-
-          if [ -d target ]; then
-            echo "target/: FOUND"
-          else
-            echo "target/: NOT FOUND"
-          fi
-
-          if [ -x scripts/mkimage ]; then
-            echo "scripts/mkimage: FOUND"
-          else
-            echo "scripts/mkimage: NOT FOUND"
-          fi
-
+          echo "CPH1923 DTB:"
           if [ -f main_dtb_header.bin ]; then
-            echo "main_dtb_header.bin: FOUND"
+            echo "FOUND"
           else
-            echo "main_dtb_header.bin: NOT FOUND"
+            echo "NOT PROVIDED — expected at this stage"
           fi
 
       - name: Summary
         shell: bash
         run: |
           {
-            echo "## OPPO A1K LK environment"
+            echo "## OPPO A1K LK integration"
             echo
             echo "- Ubuntu 22.04: OK"
             echo "- Python 2.7.18: OK"
-            echo "- GNU Make: OK"
-            echo "- Android ARM GCC 4.9: installed"
-            echo "- arm-linux-androideabi toolchain: tested"
+            echo "- Base LK commit 37ec8bc: checked out"
+            echo "- OPPO A1K patch: applied"
+            echo "- Bundled Android ARM GCC 4.9: OK"
+            echo "- MTK mkimage: OK"
+            echo "- bootimg validator tests: executed"
             echo
-            echo "The environment is ready for the MTK LK BSP."
-            echo
-            echo "Actual LK compilation is not enabled yet because"
-            echo "the public repository contains the source patch,"
-            echo "not the complete base BSP tree."
+            echo "Full lk.bin build is intentionally not started yet."
+            echo "A CPH1923-specific main_dtb_header.bin must be supplied first."
           } >> "$GITHUB_STEP_SUMMARY"
