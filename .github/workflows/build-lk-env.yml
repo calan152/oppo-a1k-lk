@@ -69,9 +69,20 @@ jobs:
 
           echo
           echo "=== Build tools ==="
-          make --version | head -n 1
-          perl -v | grep -m1 "This is perl"
-          gcc --version | head -n 1
+
+          echo "--- GNU Make ---"
+          make --version
+
+          echo
+          echo "--- Perl ---"
+          perl -v
+
+          echo
+          echo "--- GCC ---"
+          gcc --version
+
+          echo
+          echo "--- Git ---"
           git --version
 
           echo
